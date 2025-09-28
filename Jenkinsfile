@@ -55,7 +55,6 @@ pipeline {
           echo "[CHECK] docker=$(command -v docker || true)"
           echo "[CHECK] docker compose=$(docker compose version | head -1 || docker-compose version | head -1 || true)"
 
-          # If your repo already does the compose build, we only need to retag local images here
           echo "[BUILD] Re-tag local images → Docker Hub names"
           docker image inspect ${LOCAL_IMG_PRODUCT}  >/dev/null
           docker image inspect ${LOCAL_IMG_ORDER}    >/dev/null
@@ -189,50 +188,63 @@ pipeline {
               HURL="${SONAR_HOST_URL:-https://sonarcloud.io}"
               OUT="$(curl -sS -u "${TOKEN}:" "${HURL%/}/api/authentication/validate" || true)"
               echo "$OUT" | grep -q '"valid":true' || { echo "[QUALITY][ERROR] Invalid Sonar token for ${HURL}: $OUT"; exit 1; }
-              docker run --rm --platform=linux/amd64 -e SONAR_HOST_URL="$HURL" -e SONAR_TOKEN="$TOKEN" -v "$PWD:/usr/src" -w /usr/src sonarsource/sonar-scanner-cli:latest
+              docker run --rm --platform=linux/amd64 \
+                -e SONAR_HOST_URL="$HURL" -e SONAR_TOKEN="$TOKEN" \
+                -v "$PWD:/usr/src" -w /usr/src \
+                sonarsource/sonar-scanner-cli:latest
             '''
           }
         }
       }
     }
 
+    /* ========================= UPDATED SECURITY STAGE ========================= */
     stage('Security') {
-        steps {
-            sh '''#!/bin/sh
-        set -eu
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
 
-        echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
-        # Create output dir if you want artifacts
-        mkdir -p security-reports
+          echo "[SECURITY] Prepare cache & reports dirs"
+          mkdir -p security-reports .trivycache
 
-        # Advisory filesystem scan (does NOT fail the build)
-        docker run --rm -v "$(pwd)":/src -w /src \
-        aquasec/trivy:0.55.0 fs --scanners vuln,misconfig,secret \
-        --format json --output security-reports/trivy-fs.json /src || true
+          TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
 
-        docker run --rm -v "$(pwd)":/src -w /src \
-        aquasec/trivy:0.55.0 fs --scanners vuln,misconfig,secret \
-        --format sarif --output security-reports/trivy-fs.sarif /src || true
+          echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
+          docker run --rm \
+            -v "$PWD":/src -w /src \
+            -v "$PWD/.trivycache":/root/.cache/ \
+            "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
+              --format json  --output security-reports/trivy-fs.json \
+              --no-progress /src || true
 
-        echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL)"
-        for IMG in \
-        "${REGISTRY}/${DOCKERHUB_NS}/product_service:${IMAGE_TAG}" \
-        "${REGISTRY}/${DOCKERHUB_NS}/order_service:${IMAGE_TAG}" \
-        "${REGISTRY}/${DOCKERHUB_NS}/frontend:${IMAGE_TAG}"
-        do
-        echo " - scanning $IMG"
-        docker run --rm aquasec/trivy:0.55.0 image \
-            --exit-code 1 \
-            --severity HIGH,CRITICAL \
-            --no-progress \
-            "$IMG"
-        done
+          docker run --rm \
+            -v "$PWD":/src -w /src \
+            -v "$PWD/.trivycache":/root/.cache/ \
+            "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
+              --format sarif --output security-reports/trivy-fs.sarif \
+              --no-progress /src || true
+
+          echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL)"
+          IMAGES="${REGISTRY}/${DOCKERHUB_NS}/product_service:${IMAGE_TAG} \
+                  ${REGISTRY}/${DOCKERHUB_NS}/order_service:${IMAGE_TAG} \
+                  ${REGISTRY}/${DOCKERHUB_NS}/frontend:${IMAGE_TAG}"
+
+          for IMG in $IMAGES; do
+            echo " - scanning $IMG"
+            docker run --rm \
+              -v "$PWD/.trivycache":/root/.cache/ \
+              "$TRIVY_IMG" image \
+                --exit-code 1 \
+                --severity HIGH,CRITICAL \
+                --no-progress \
+                "$IMG"
+          done
         '''
-            // optionally archive reports so you can download them from Jenkins
-            archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
-        }
+        // Archive advisory reports so you can download them from Jenkins
+        archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
+      }
     }
-
+    /* ========================================================================= */
 
     stage('Deploy') {
       steps {
@@ -263,29 +275,23 @@ pipeline {
             compose ps || true
 
             echo "[DEPLOY] Health checks: product, order, frontend, prometheus, grafana"
-            # Product
             if ! wait_http "http://localhost:8000/health" 90; then
               echo "[DEPLOY][WARN] product /health failed; trying root /"
               wait_http "http://localhost:8000/" 30 || FAIL_PRODUCT=1
             fi
-            # Order
             if ! wait_http "http://localhost:8001/health" 90; then
               echo "[DEPLOY][WARN] order /health failed; trying root /"
               wait_http "http://localhost:8001/" 30 || FAIL_ORDER=1
             fi
-            # Frontend
             wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
-            # Prometheus
             wait_http "http://localhost:9090/" 90 || FAIL_PROM=1
-            # Grafana
             wait_http "http://localhost:3000/" 90 || FAIL_GRAF=1
 
             if [ "${FAIL_PRODUCT:-0}" -ne 0 ] || [ "${FAIL_ORDER:-0}" -ne 0 ] || \
                [ "${FAIL_FRONTEND:-0}" -ne 0 ] || [ "${FAIL_PROM:-0}" -ne 0 ] || \
                [ "${FAIL_GRAF:-0}" -ne 0 ]; then
-              echo "[DEPLOY][ERROR] Staging health checks failed. Attempting rollback to :latest tags where applicable."
+              echo "[DEPLOY][ERROR] Staging health checks failed. Attempting rollback to :latest."
               compose logs --no-color > reports/compose-failed.log || true
-              # Best-effort rollback: restart stack forcing :latest images if your compose uses tags
               COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d || true
               exit 1
             fi
@@ -317,12 +323,10 @@ pipeline {
             kubectl config use-context ${KUBE_CONTEXT}
             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-            # Apply infra-as-code (manifests) first
             for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml; do
               [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
             done
 
-            # Helper: set image + rollout with rollback on failure
             update_img () {
               app_label="$1"; new_ref="$2"
               dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
