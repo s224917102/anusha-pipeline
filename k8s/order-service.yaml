@@ -3,7 +3,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: order-service-w09-aks
+  name: order-service
   labels:
     app: order-service
 spec:
@@ -53,7 +53,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: order-service-w09-aks
+  name: order-service
   labels:
     app: order-service
 spec:

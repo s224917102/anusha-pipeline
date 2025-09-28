@@ -26,7 +26,7 @@ pipeline {
     K8S_DIR       = 'k8s'
 
     SONARQUBE = 'SonarQube'
-    SCANNER   = 'SonarScanner' // not used now, but keeping for reference
+    SCANNER   = 'SonarScanner'
     SONAR_PROJECT_KEY  = 's224917102_DevOpsPipeline'
     SONAR_PROJECT_NAME = 'DevOpsPipeline'
     SONAR_SOURCES      = '.'
@@ -34,6 +34,8 @@ pipeline {
     PRODUCT_DIR  = 'backend/product_service'
     ORDER_DIR    = 'backend/order_service'
     FRONTEND_DIR = 'frontend'
+
+    TRIVY_VER    = '0.55.0'
   }
 
   stages {
@@ -84,14 +86,12 @@ pipeline {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
 
-          # ---------- helpers ----------
           make_venv () {
             vdir="$1"; shift
             python3 -m venv "$vdir"
             . "$vdir/bin/activate"
             python -m pip install -U pip wheel >/dev/null
-            # install all given pkgs verbatim (quoted by caller when needed)
-            python -m pip install "$@" >/dev/null
+            [ $# -gt 0 ] && python -m pip install "$@" >/dev/null || true
             deactivate
           }
 
@@ -109,7 +109,6 @@ pipeline {
             return 1
           }
 
-          # ---------- unit: spin up DBs ----------
           echo "[TEST][UNIT] Clean old DBs"
           docker rm -f product_db order_db >/dev/null 2>&1 || true
 
@@ -125,30 +124,24 @@ pipeline {
           wait_db product_db
           wait_db order_db
 
-          # ---------- unit: product_service ----------
           echo "[TEST][UNIT] Product"
           if [ -d ${PRODUCT_DIR} ]; then
             make_venv ".venv_prod" "pytest>=8,<9" "pytest-timeout==2.3.1"
             . .venv_prod/bin/activate
-            # install runtime + dev deps (use -r for files)
             [ -f ${PRODUCT_DIR}/requirements.txt ] && python -m pip install -r ${PRODUCT_DIR}/requirements.txt >/dev/null || true
             [ -f ${PRODUCT_DIR}/requirements-dev.txt ] && python -m pip install -r ${PRODUCT_DIR}/requirements-dev.txt >/dev/null || true
-
             export POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DB=products POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
-            # avoid random plugin autoload; then explicitly load timeout
             export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
             pytest -q -p pytest_timeout ${PRODUCT_DIR}/tests --junitxml=product_unit.xml --timeout=60 --timeout-method=thread
             deactivate
           fi
 
-          # ---------- unit: order_service ----------
           echo "[TEST][UNIT] Order"
           if [ -d ${ORDER_DIR} ]; then
             make_venv ".venv_order" "pytest>=8,<9" "pytest-timeout==2.3.1"
             . .venv_order/bin/activate
             [ -f ${ORDER_DIR}/requirements.txt ] && python -m pip install -r ${ORDER_DIR}/requirements.txt >/dev/null || true
             [ -f ${ORDER_DIR}/requirements-dev.txt ] && python -m pip install -r ${ORDER_DIR}/requirements-dev.txt >/dev/null || true
-
             export POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_DB=orders POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
             export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
             pytest -q -p pytest_timeout ${ORDER_DIR}/tests --junitxml=order_unit.xml --timeout=60 --timeout-method=thread
@@ -158,13 +151,10 @@ pipeline {
           echo "[TEST][UNIT] Stop DB containers"
           docker rm -f product_db order_db >/dev/null 2>&1 || true
 
-          # ---------- integration ----------
           echo "[TEST][INT] Compose up (if tests/integration exists)"
           if [ -d tests/integration ]; then
             (docker compose up -d --remove-orphans || docker-compose up -d --remove-orphans)
-
             wait_http () { url="$1"; max="$2"; i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $max ] && return 1; sleep 1; done; }
-
             if ! wait_http "http://localhost:8000/health" 90; then
               echo "[TEST][INT] product_service not ready in time"
               (docker compose logs product_service || docker-compose logs product_service) | tail -200 || true
@@ -177,7 +167,6 @@ pipeline {
               (docker compose down -v || docker-compose down -v) || true
               exit 1
             fi
-
             INT_KEY=$(date +%s)
             make_venv ".venv_int_${INT_KEY}" "pytest>=8,<9" "pytest-timeout==2.3.1" requests
             . ".venv_int_${INT_KEY}/bin/activate"
@@ -186,7 +175,6 @@ pipeline {
             export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
             pytest -q -p pytest_timeout tests/integration --junitxml=integration.xml --timeout=90 --timeout-method=thread
             deactivate
-
             echo "[TEST][INT] Compose down"
             (docker compose down -v || docker-compose down -v)
           else
@@ -203,93 +191,75 @@ pipeline {
     }
 
     stage('Code Quality') {
-        steps {
-            // This sets SONAR_HOST_URL and (depending on plugin version) SONAR_AUTH_TOKEN
-            withSonarQubeEnv("${SONARQUBE}") {
-            // Your secret text credential that stores the actual SonarCloud token
-                withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
-                    sh '''#!/usr/bin/env bash
-                    set -euo pipefail
-                    echo "[QUALITY] Sonar analysis via Dockerized scanner (bundled Java)"
-
-                    # Must exist at repo root
-                    if [ ! -f "sonar-project.properties" ]; then
-                        echo "[QUALITY][ERROR] sonar-project.properties not found at repo root."
-                        exit 1
-                    fi
-
-                    # Prefer explicit Jenkins credential; fall back to token provided by withSonarQubeEnv if any
-                    TOKEN="${SONAR_TOKEN:-${SONAR_AUTH_TOKEN:-}}"
-                    if [ -z "$TOKEN" ]; then
-                        echo "[QUALITY][ERROR] No token available. Check Jenkins credential ID=SONAR_TOKEN or your SonarQube server config."
-                        exit 1
-                    fi
-
-                    HURL="${SONAR_HOST_URL:-https://sonarcloud.io}"
-                    echo "[QUALITY] SONAR_HOST_URL=$HURL"
-
-                    # Quick preflight: validate token against SonarCloud to avoid confusing scanner 403
-                    echo "[QUALITY] Validating token with SonarCloud…"
-                    if ! OUT="$(curl -sS -u "${TOKEN}:" "${HURL%/}/api/authentication/validate")"; then
-                        echo "[QUALITY][ERROR] Could not reach ${HURL}. Network/DNS issue?"
-                        exit 1
-                    fi
-                    echo "$OUT" | grep -q '"valid":true' || {
-                        echo "[QUALITY][ERROR] Sonar token is invalid for ${HURL} (got: $OUT)."
-                        echo "  - Make sure the token belongs to the organization in sonar-project.properties"
-                        echo "  - Token must have 'Execute analysis' permission on project/organization"
-                        exit 1
-                    }
-
-                    # Force amd64 on Apple Silicon hosts
-                    PLATFORM_FLAG="--platform=linux/amd64"
-
-                    # Run official scanner image (bundles Java)
-                    docker run --rm ${PLATFORM_FLAG} \
-                        -e SONAR_HOST_URL="$HURL" \
-                        -e SONAR_TOKEN="$TOKEN" \
-                        -v "$PWD:/usr/src" \
-                        -w /usr/src \
-                        sonarsource/sonar-scanner-cli:latest
-                    '''
-                }
-            }
+      steps {
+        withSonarQubeEnv("${SONARQUBE}") {
+          withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
+            sh '''#!/usr/bin/env bash
+              set -euo pipefail
+              echo "[QUALITY] Sonar analysis via Dockerized scanner (bundled Java)"
+              if [ ! -f "sonar-project.properties" ]; then
+                echo "[QUALITY][ERROR] sonar-project.properties not found at repo root."
+                exit 1
+              fi
+              TOKEN="${SONAR_TOKEN:-${SONAR_AUTH_TOKEN:-}}"
+              if [ -z "$TOKEN" ]; then
+                echo "[QUALITY][ERROR] No token available. Provide Jenkins secret 'SONAR_TOKEN'."
+                exit 1
+              fi
+              HURL="${SONAR_HOST_URL:-https://sonarcloud.io}"
+              echo "[QUALITY] Validating token…"
+              OUT="$(curl -sS -u "${TOKEN}:" "${HURL%/}/api/authentication/validate" || true)"
+              echo "$OUT" | grep -q '"valid":true' || { echo "[QUALITY][ERROR] Invalid Sonar token for ${HURL}: $OUT"; exit 1; }
+              docker run --rm --platform=linux/amd64 \
+                -e SONAR_HOST_URL="$HURL" -e SONAR_TOKEN="$TOKEN" \
+                -v "$PWD:/usr/src" -w /usr/src \
+                sonarsource/sonar-scanner-cli:latest
+            '''
+          }
         }
+      }
     }
 
     stage('Security') {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          echo "[SECURITY] Trivy fs"
-          docker run --rm -v "$(pwd)":/src aquasec/trivy:0.55.0 fs --exit-code 1 --severity HIGH,CRITICAL /src
-          echo "[SECURITY] Trivy images"
-          for img in ${PRODUCT_IMG}:${IMAGE_TAG} ${ORDER_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${IMAGE_TAG}; do
-            docker run --rm aquasec/trivy:0.55.0 image --exit-code 1 --severity HIGH,CRITICAL "$img"
+
+          echo "[SECURITY] Trivy filesystem scan"
+          docker run --rm -v "$(pwd)":/src aquasec/trivy:${TRIVY_VER} fs \
+            --scanners vuln,secret,misconfig \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            /src
+
+          echo "[SECURITY] Prepare local image TARs for scan"
+          mkdir -p .trivy-cache
+
+          declare -A MAP
+          MAP["${PRODUCT_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_PRODUCT}"
+          MAP["${ORDER_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_ORDER}"
+          MAP["${FRONTEND_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_FRONTEND}"
+
+          for TARGET_REF in "${!MAP[@]}"; do
+            LOCAL_REF="${MAP[$TARGET_REF]}"
+            echo "[SECURITY] Save ${LOCAL_REF} -> image.tar"
+            rm -f image.tar
+            docker image inspect "${LOCAL_REF}" >/dev/null
+            docker save "${LOCAL_REF}" -o image.tar
+
+            echo "[SECURITY] Trivy image (tar) ${TARGET_REF}"
+            docker run --rm \
+              -v "$PWD:/work" \
+              -e TRIVY_CACHE_DIR=/work/.trivy-cache \
+              aquasec/trivy:${TRIVY_VER} image \
+              --input /work/image.tar \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --exit-code 1 \
+              --timeout 10m
           done
-        '''
-      }
-    }
-
-    stage('Deploy') {
-      steps {
-        sh '''#!/usr/bin/env bash
-          set -euo pipefail
-          echo "[DEPLOY] Context ${KUBE_CONTEXT}"
-          kubectl config use-context ${KUBE_CONTEXT}
-          kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-
-          for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml; do
-            [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
-          done
-
-          kubectl set image deploy/product-service product-service=${PRODUCT_IMG}:${IMAGE_TAG} -n ${NAMESPACE} || true
-          kubectl set image deploy/order-service   order-service=${ORDER_IMG}:${IMAGE_TAG}   -n ${NAMESPACE} || true
-          kubectl set image deploy/frontend        frontend=${FRONTEND_IMG}:${IMAGE_TAG}     -n ${NAMESPACE} || true
-
-          kubectl rollout status deploy/product-service -n ${NAMESPACE} --timeout=180s || true
-          kubectl rollout status deploy/order-service   -n ${NAMESPACE} --timeout=180s || true
-          kubectl rollout status deploy/frontend        -n ${NAMESPACE} --timeout=180s || true
         '''
       }
     }
@@ -299,6 +269,7 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''#!/usr/bin/env bash
             set -euo pipefail
+            echo "[RELEASE] Login & push tags"
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
             for i in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
               docker push $i:${IMAGE_TAG}
@@ -317,6 +288,36 @@ pipeline {
             git push origin "${RELEASE_TAG}" || true
           '''
         }
+      }
+    }
+
+    stage('Deploy') {
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
+          echo "[DEPLOY] Context ${KUBE_CONTEXT}"
+          kubectl config use-context ${KUBE_CONTEXT}
+          kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+
+          for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml; do
+            [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+          done
+
+          # Helper: update image by label -> finds deployment & its first container
+          update_img () {
+            app_label="$1"; new_ref="$2"
+            dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            [ -z "$dep" ] && { echo "[DEPLOY][WARN] No deployment for app=${app_label}"; return 0; }
+            container="$(kubectl get deploy "$dep" -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].name}')"
+            echo "[DEPLOY] set image deploy/${dep} ${container}=${new_ref}"
+            kubectl set image deploy/"$dep" "${container}=${new_ref}" -n ${NAMESPACE}
+            kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=180s
+          }
+
+          update_img product-service ${PRODUCT_IMG}:${IMAGE_TAG}
+          update_img order-service   ${ORDER_IMG}:${IMAGE_TAG}
+          update_img frontend        ${FRONTEND_IMG}:${IMAGE_TAG}
+        '''
       }
     }
 
