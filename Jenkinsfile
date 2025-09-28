@@ -1,7 +1,6 @@
 pipeline {
   agent any
 
-  // Optional: poll the repo every 2 minutes (you can also keep this in the job UI)
   triggers {
     pollSCM('H/2 * * * *')
   }
@@ -13,10 +12,9 @@ pipeline {
   }
 
   environment {
-    // --- Tools path hints for macOS Jenkins controller nodes ---
     PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
-    // ========== Docker Hub ==========
+    // Docker Hub
     DOCKERHUB_NS    = 's224917102'
     DOCKERHUB_CREDS = 'dockerhub-s224917102'
     REGISTRY        = 'docker.io'
@@ -24,32 +22,29 @@ pipeline {
     ORDER_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
     FRONTEND_IMG    = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
 
-    // ========== Local images built by docker compose ==========
-    // Matches what you see with `docker images`
+    // Local images (as shown by your docker images output)
     PROD_SRC = 'week09_example02_product_service:latest'
     ORD_SRC  = 'week09_example02_order_service:latest'
     FE_SRC   = 'week09_example02_frontend:latest'
 
-    // ========== Kubernetes (local) ==========
-    KUBE_CONTEXT  = 'docker-desktop'    // change to 'minikube' if that's what you use
+    // K8s
+    KUBE_CONTEXT  = 'docker-desktop'
     NAMESPACE     = 'default'
     K8S_DIR       = 'k8s'
 
-    // ========== SonarQube/SonarCloud ==========
-    // Jenkins: Manage Jenkins → System → SonarQube servers: Name: "SonarQube", URL: https://sonarcloud.io
-    // Jenkins: Manage Jenkins → Global Tool Configuration → SonarQube Scanner: Name "SonarScanner"
+    // Sonar
     SONARQUBE = 'SonarQube'
     SCANNER   = 'SonarScanner'
 
-    // ========== Project paths (used by tests) ==========
+    // Project dirs for tests
     PRODUCT_DIR  = 'backend/product_service'
     ORDER_DIR    = 'backend/order_service'
     FRONTEND_DIR = 'frontend'
 
-    // ========== Derived at runtime ==========
+    // Derived at runtime
     GIT_SHA     = ''
-    IMAGE_TAG   = ''   // <sha>-<build>   (e.g., 57312be-10)
-    RELEASE_TAG = ''   // v<build>.<sha>  (e.g., v10.57312be)
+    IMAGE_TAG   = ''
+    RELEASE_TAG = ''
   }
 
   stages {
@@ -59,9 +54,10 @@ pipeline {
         checkout scm
 
         script {
-          env.GIT_SHA     = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
-          env.IMAGE_TAG   = "${env.GIT_SHA}-${env.BUILD_NUMBER}"
-          env.RELEASE_TAG = "v${env.BUILD_NUMBER}.${env.GIT_SHA}"
+          def sha = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+          env.GIT_SHA     = sha
+          env.IMAGE_TAG   = "${sha}-${env.BUILD_NUMBER}"
+          env.RELEASE_TAG = "v${env.BUILD_NUMBER}.${sha}"
           echo "[BUILD] Computed IMAGE_TAG=${env.IMAGE_TAG} | RELEASE_TAG=${env.RELEASE_TAG}"
         }
 
@@ -72,7 +68,6 @@ pipeline {
           echo "[CHECK] docker compose=$(docker compose version 2>/dev/null | head -1 || true)"
           echo "[CHECK] kubectl=$(command -v kubectl || true)"
 
-          # Build images with docker compose if compose file exists
           if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
             echo "[BUILD] Using docker compose to build images"
             docker compose build --pull
@@ -80,9 +75,9 @@ pipeline {
             echo "[BUILD] No docker-compose file found; assuming local images already exist."
           fi
 
-          echo "[BUILD] Re-tag local images to Docker Hub using dynamic IMAGE_TAG: ${IMAGE_TAG}"
+          echo "[BUILD] Re-tag local images to Docker Hub using IMAGE_TAG=${IMAGE_TAG}"
 
-          # Sanity: ensure local images exist
+          # Ensure the local images exist
           docker image inspect "${PROD_SRC}" >/dev/null
           docker image inspect "${ORD_SRC}"  >/dev/null
           docker image inspect "${FE_SRC}"   >/dev/null
@@ -122,7 +117,6 @@ pipeline {
           for i in $(seq 1 30); do docker exec product_db pg_isready -U postgres && break || sleep 2; done
           for i in $(seq 1 30); do docker exec order_db   pg_isready -U postgres && break || sleep 2; done
 
-          # Simple Python venv helper
           py() { python3 -m venv "$1" && . "$1/bin/activate" && pip install -U pip && shift && pip install "$@" ; }
 
           echo "[TEST] Unit tests (product_service)"
@@ -172,12 +166,11 @@ pipeline {
 
     stage('Code Quality') {
       steps {
-        // If you have sonar-project.properties in repo, just run the scanner.
         withSonarQubeEnv("${SONARQUBE}") {
           withEnv(["PATH+SCANNER=${tool SCANNER}/bin"]) {
             sh '''
               set -euo pipefail
-              echo "[QUALITY] Running sonar-scanner (uses sonar-project.properties if present)"
+              echo "[QUALITY] Running sonar-scanner"
               sonar-scanner
             '''
           }
@@ -192,7 +185,7 @@ pipeline {
           echo "[SECURITY] Trivy filesystem scan (fail on HIGH,CRITICAL)"
           docker run --rm -v "$(pwd)":/src aquasec/trivy:0.55.0 fs --exit-code 1 --severity HIGH,CRITICAL /src
 
-          echo "[SECURITY] Trivy image scan (local images just tagged)"
+          echo "[SECURITY] Trivy image scan (newly tagged images)"
           for img in \
             "${PRODUCT_IMG}:${IMAGE_TAG}" \
             "${ORDER_IMG}:${IMAGE_TAG}" \
@@ -213,17 +206,14 @@ pipeline {
           kubectl config use-context "${KUBE_CONTEXT}"
           kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
-          # Apply base manifests if present
           for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml; do
             [ -f "${K8S_DIR}/$f" ] && kubectl apply -n "${NAMESPACE}" -f "${K8S_DIR}/$f" || true
           done
 
-          # Point deployments to freshly-tagged images
           kubectl set image deploy/product-service product-service=${PRODUCT_IMG}:${IMAGE_TAG} -n "${NAMESPACE}" || true
           kubectl set image deploy/order-service   order-service=${ORDER_IMG}:${IMAGE_TAG}   -n "${NAMESPACE}" || true
           kubectl set image deploy/frontend        frontend=${FRONTEND_IMG}:${IMAGE_TAG}     -n "${NAMESPACE}" || true
 
-          echo "[DEPLOY] Wait for rollouts (best-effort)"
           kubectl rollout status deploy/product-service -n "${NAMESPACE}" --timeout=180s || true
           kubectl rollout status deploy/order-service   -n "${NAMESPACE}" --timeout=180s || true
           kubectl rollout status deploy/frontend        -n "${NAMESPACE}" --timeout=180s || true
@@ -246,7 +236,6 @@ pipeline {
               docker push "$i:latest"
             done
 
-            # Immutable release tag
             docker tag "${PRODUCT_IMG}:${IMAGE_TAG}"  "${PRODUCT_IMG}:${RELEASE_TAG}"
             docker tag "${ORDER_IMG}:${IMAGE_TAG}"    "${ORDER_IMG}:${RELEASE_TAG}"
             docker tag "${FRONTEND_IMG}:${IMAGE_TAG}" "${FRONTEND_IMG}:${RELEASE_TAG}"
@@ -255,7 +244,6 @@ pipeline {
               docker push "$i:${RELEASE_TAG}"
             done
 
-            echo "[RELEASE] Git tag (best-effort)"
             git config user.email "ci@jenkins"
             git config user.name  "Jenkins CI"
             git tag -a "${RELEASE_TAG}" -m "Release ${RELEASE_TAG}" || true
