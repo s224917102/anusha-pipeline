@@ -1,16 +1,46 @@
 # week09/example-2/backend/product_service/Dockerfile
 
-FROM python:3.10-slim-buster
+# Fewer CVEs than buster
+FROM python:3.10-slim-bookworm
 
-WORKDIR /code
+# Python & pip sanity
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
+# Create non-root user
+RUN addgroup --system app && adduser --system --ingroup app --uid 10001 appuser
+
+# Workdir
+WORKDIR /app
+
+# Install dependencies first (better layer cache)
 COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
 
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Copy app code
+COPY app ./app
 
-COPY app /code/app
+# Fix ownership
+RUN chown -R appuser:app /app
 
+# Drop privileges
+USER appuser
+
+# Port
 EXPOSE 8000
 
+# Lightweight healthcheck (no curl/wget)
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD python - <<'PY' || exit 1
+import urllib.request, sys
+try:
+    with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=2) as r:
+        sys.exit(0 if r.status == 200 else 1)
+except Exception:
+    sys.exit(1)
+PY
+
+# Entrypoint
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
