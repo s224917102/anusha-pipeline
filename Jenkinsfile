@@ -39,11 +39,6 @@ pipeline {
     PRODUCT_DIR  = 'backend/product_service'
     ORDER_DIR    = 'backend/order_service'
     FRONTEND_DIR = 'frontend'
-
-    // ===== Derived at runtime (exported before shell usage) =====
-    GIT_SHA     = ''
-    IMAGE_TAG   = ''     // <sha>-<build>   (e.g., e0f281c-42)
-    RELEASE_TAG = ''     // v<build>.<sha>  (e.g., v42.e0f281c)
   }
 
   stages {
@@ -52,16 +47,12 @@ pipeline {
     stage('Build') {
       steps {
         checkout scm
-        script {
-          // compute, then export to env.* so subsequent sh sees them
-          def sha = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
-          env.GIT_SHA     = sha
-          env.IMAGE_TAG   = "${sha}-${env.BUILD_NUMBER}"
-          env.RELEASE_TAG = "v${env.BUILD_NUMBER}.${sha}"
-          echo "[BUILD] Computed IMAGE_TAG=${env.IMAGE_TAG} | RELEASE_TAG=${env.RELEASE_TAG}"
-        }
         sh '''
           set -euo pipefail
+
+          GIT_SHA="$(git rev-parse --short HEAD)"
+          IMAGE_TAG="${GIT_SHA}-${BUILD_NUMBER}"
+          RELEASE_TAG="v${BUILD_NUMBER}.${GIT_SHA}"
           echo "[BUILD] IMAGE_TAG=${IMAGE_TAG} | RELEASE_TAG=${RELEASE_TAG}"
 
           if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
@@ -88,8 +79,8 @@ pipeline {
       steps {
         sh '''
           set -euo pipefail
-          echo "[TEST] Launching Postgres containers for unit tests"
 
+          echo "[TEST] Launching Postgres containers for unit tests"
           docker rm -f product_db order_db >/dev/null 2>&1 || true
 
           docker run -d --name product_db -p 5432:5432 \
@@ -177,8 +168,8 @@ pipeline {
             withEnv(["PATH+SCANNER=${scannerBin}/bin"]) {
               sh '''
                 set -euo pipefail
-                echo "[QUALITY] Generate coverage for SonarCloud"
 
+                # regenerate coverage for SonarCloud (simple approach)
                 if [ -d ${PRODUCT_DIR} ]; then
                   python3 -m venv .venv_cov_prod
                   . .venv_cov_prod/bin/activate
@@ -198,15 +189,17 @@ pipeline {
                 if [ -f cov_order.xml ] && [ ! -f coverage.xml ]; then mv cov_order.xml coverage.xml; fi
                 [ -f coverage.xml ] || echo "<coverage/>" > coverage.xml
 
-                echo "[QUALITY] Run SonarScanner (sonar-project.properties supplies keys)"
+                GIT_SHA="$(git rev-parse --short HEAD)"
+                IMAGE_TAG="${GIT_SHA}-${BUILD_NUMBER}"
+
+                echo "[QUALITY] Run SonarScanner (uses sonar-project.properties)"
                 sonar-scanner \
-                  -Dsonar.projectVersion=${IMAGE_TAG} \
-                  -Dsonar.login=$SONAR_TOKEN
+                  -Dsonar.projectVersion="${IMAGE_TAG}" \
+                  -Dsonar.login="$SONAR_TOKEN"
               '''
             }
           }
         }
-        // Keep Quality Gate wait here to maintain 7 total stages
         timeout(time: 5, unit: 'MINUTES') {
           waitForQualityGate abortPipeline: true
         }
@@ -218,6 +211,10 @@ pipeline {
       steps {
         sh '''
           set -euo pipefail
+
+          GIT_SHA="$(git rev-parse --short HEAD)"
+          IMAGE_TAG="${GIT_SHA}-${BUILD_NUMBER}"
+
           echo "[SECURITY] Trivy fs (source) — fail on HIGH,CRITICAL"
           docker run --rm -v "$(pwd)":/src aquasec/trivy:0.55.0 fs --exit-code 1 --severity HIGH,CRITICAL /src
 
@@ -235,6 +232,10 @@ pipeline {
       steps {
         sh '''
           set -euo pipefail
+
+          GIT_SHA="$(git rev-parse --short HEAD)"
+          IMAGE_TAG="${GIT_SHA}-${BUILD_NUMBER}"
+
           echo "[DEPLOY] Local Kubernetes context: ${KUBE_CONTEXT}"
           kubectl config use-context ${KUBE_CONTEXT}
           kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
@@ -263,6 +264,11 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''
             set -euo pipefail
+
+            GIT_SHA="$(git rev-parse --short HEAD)"
+            IMAGE_TAG="${GIT_SHA}-${BUILD_NUMBER}"
+            RELEASE_TAG="v${BUILD_NUMBER}.${GIT_SHA}"
+
             echo "[RELEASE] Login & push dynamic, latest, and immutable tags"
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
 
@@ -278,47 +284,4 @@ pipeline {
               docker push $i:${RELEASE_TAG}
             done
 
-            echo "[RELEASE] Create annotated git tag"
-            git config user.email "ci@jenkins"
-            git config user.name  "Jenkins CI"
-            git tag -a "${RELEASE_TAG}" -m "Release ${RELEASE_TAG}" || true
-            git push origin "${RELEASE_TAG}" || true
-          '''
-        }
-      }
-    }
-
-    // 7) MONITORING (post-deploy smoke checks)
-    stage('Monitoring') {
-      steps {
-        sh '''
-          set -euo pipefail
-          echo "[MONITOR] Smoke checks via port-forward to /health"
-
-          PRODUCT_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=product-service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-          ORDER_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=order-service   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-
-          if [ -n "$PRODUCT_SVC" ]; then
-            kubectl port-forward svc/${PRODUCT_SVC} 18000:8000 -n ${NAMESPACE} >/tmp/pf_prod.log 2>&1 &
-            PF1=$!; sleep 3
-            curl -fsS http://localhost:18000/health || (echo "Product /health failed" && kill $PF1 || true && exit 1)
-            kill $PF1 || true
-          fi
-
-          if [ -n "$ORDER_SVC" ]; then
-            kubectl port-forward svc/${ORDER_SVC} 18001:8001 -n ${NAMESPACE} >/tmp/pf_order.log 2>&1 &
-            PF2=$!; sleep 3
-            curl -fsS http://localhost:18001/health || (echo "Order /health failed" && kill $PF2 || true && exit 1)
-            kill $PF2 || true
-          fi
-        '''
-      }
-    }
-  }
-
-  post {
-    success { echo "Pipeline succeeded - ${IMAGE_TAG} (${RELEASE_TAG})" }
-    failure { echo "Pipeline failed - see logs." }
-    always  { echo "Pipeline completed." }
-  }
-}
+            echo "[REL]()
