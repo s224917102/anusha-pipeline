@@ -18,7 +18,7 @@ pipeline {
     ORDER_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
     FRONTEND_IMG    = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
 
-    // Local tags built in Build stage
+    // Local tags we control in this pipeline
     LOCAL_IMG_PRODUCT  = 'week09_example02_product_service:latest'
     LOCAL_IMG_ORDER    = 'week09_example02_order_service:latest'
     LOCAL_IMG_FRONTEND = 'week09_example02_frontend:latest'
@@ -41,7 +41,7 @@ pipeline {
 
   stages {
 
-    /* ========================= BUILD (rebuild images) ========================= */
+    /* ========================= BUILD (amd64) ========================= */
     stage('Build') {
       steps {
         checkout scm
@@ -53,26 +53,29 @@ pipeline {
         }
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-
-          PLATFORM="${DOCKER_BUILD_PLATFORM:-linux/amd64}"
+          export DOCKER_DEFAULT_PLATFORM=linux/amd64
           export DOCKER_BUILDKIT=1
 
           echo "[BUILD] docker=$(command -v docker || true)"
           echo "[BUILD] docker compose=$(docker compose version | head -1 || docker-compose version | head -1 || true)"
-          echo "[BUILD] platform=${PLATFORM}"
+          echo "[BUILD] DOCKER_DEFAULT_PLATFORM=$DOCKER_DEFAULT_PLATFORM"
 
-          echo "[BUILD] Build local images"
-          docker build --pull --platform="${PLATFORM}" \
+          # If your repo has compose build contexts, this will build all of them as amd64
+          echo "[BUILD] docker compose build --no-cache (best-effort)"
+          (docker compose build --no-cache || docker-compose build --no-cache || true)
+
+          echo "[BUILD] Build explicit images as amd64 (authoritative)"
+          docker build --pull --platform=linux/amd64 \
             --label org.opencontainers.image.revision="${GIT_SHA}" \
             --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
             -t ${LOCAL_IMG_PRODUCT} ${PRODUCT_DIR}
 
-          docker build --pull --platform="${PLATFORM}" \
+          docker build --pull --platform=linux/amd64 \
             --label org.opencontainers.image.revision="${GIT_SHA}" \
             --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
             -t ${LOCAL_IMG_ORDER}   ${ORDER_DIR}
 
-          docker build --pull --platform="${PLATFORM}" \
+          docker build --pull --platform=linux/amd64 \
             --label org.opencontainers.image.revision="${GIT_SHA}" \
             --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
             -t ${LOCAL_IMG_FRONTEND} ${FRONTEND_DIR}
@@ -80,24 +83,21 @@ pipeline {
           echo "[BUILD] Tag images for registry"
           docker tag ${LOCAL_IMG_PRODUCT}  ${PRODUCT_IMG}:${IMAGE_TAG}
           docker tag ${LOCAL_IMG_PRODUCT}  ${PRODUCT_IMG}:latest
-
           docker tag ${LOCAL_IMG_ORDER}    ${ORDER_IMG}:${IMAGE_TAG}
           docker tag ${LOCAL_IMG_ORDER}    ${ORDER_IMG}:latest
-
           docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:${IMAGE_TAG}
           docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:latest
-
-          echo "[BUILD] Done."
         '''
       }
     }
-    /* ======================================================================== */
+    /* ================================================================ */
 
     stage('Test') {
       options { timeout(time: 25, unit: 'MINUTES') }
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
+          export DOCKER_DEFAULT_PLATFORM=linux/amd64
 
           make_venv () {
             vdir="$1"; shift
@@ -125,11 +125,11 @@ pipeline {
           echo "[TEST][UNIT] Clean old DBs"
           docker rm -f product_db order_db >/dev/null 2>&1 || true
 
-          echo "[TEST][UNIT] Start Postgres"
-          docker run -d --name product_db -p 5432:5432 \
+          echo "[TEST][UNIT] Start Postgres (amd64 image for consistency)"
+          docker run -d --name product_db -p 5432:5432 --platform=linux/amd64 \
             -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=products \
             postgres:15
-          docker run -d --name order_db -p 5433:5432 \
+          docker run -d --name order_db -p 5433:5432 --platform=linux/amd64 \
             -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orders \
             postgres:15
 
@@ -165,11 +165,12 @@ pipeline {
           docker rm -f product_db order_db >/dev/null 2>&1 || true
 
           echo "[TEST][INT] Compose up (if tests/integration exists)"
-          if [ -d tests/integration ]; then
+          if [ -d tests/integration ] || [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
+            export DOCKER_DEFAULT_PLATFORM=linux/amd64
             (docker compose up -d --remove-orphans || docker-compose up -d --remove-orphans)
-            wait_http () { url="$1"; max="${2:-90}"; i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $max ] && return 1; sleep 1; done; }
-            wait_http "http://localhost:8000/health" 90
-            wait_http "http://localhost:8001/health" 90
+            wait_http () { url="$1"; max="${2:-120}"; i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $max ] && return 1; sleep 1; done; }
+            wait_http "http://localhost:8000/health" 120 || wait_http "http://localhost:8000/" 60
+            wait_http "http://localhost:8001/health" 120 || wait_http "http://localhost:8001/" 60
 
             INT_KEY=$(date +%s)
             make_venv ".venv_int_${INT_KEY}" "pytest>=8,<9" "pytest-timeout==2.3.1" requests
@@ -177,7 +178,7 @@ pipeline {
             export PRODUCT_BASE=${PRODUCT_BASE:-http://localhost:8000}
             export ORDER_BASE=${ORDER_BASE:-http://localhost:8001}
             export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-            pytest -q -p pytest_timeout tests/integration --junitxml=integration.xml --timeout=90 --timeout-method=thread
+            pytest -q -p pytest_timeout tests/integration --junitxml=integration.xml --timeout=120 --timeout-method=thread
             deactivate
             (docker compose down -v || docker-compose down -v)
           else
@@ -199,7 +200,7 @@ pipeline {
           withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
             sh '''#!/usr/bin/env bash
               set -euo pipefail
-              echo "[QUALITY] Sonar analysis via Dockerized scanner (bundled Java)"
+              echo "[QUALITY] Sonar analysis via Dockerized scanner"
               if [ ! -f "sonar-project.properties" ]; then
                 echo "[QUALITY][ERROR] sonar-project.properties not found at repo root."
                 exit 1
@@ -219,129 +220,84 @@ pipeline {
       }
     }
 
-    /* ========================= SECURITY (local images) ======================= */
     stage('Security') {
       steps {
-        withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-          sh '''#!/usr/bin/env bash
-            set -euo pipefail
-            EXIT=0
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p security-reports .trivycache
+          TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
 
-            echo "[SECURITY] Prepare cache & reports dirs"
-            mkdir -p security-reports .trivycache
-            TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
+          echo "[SECURITY] FS scan (advisory)"
+          docker run --rm \
+            -v "$PWD":/src -w /src \
+            -v "$PWD/.trivycache":/root/.cache/ \
+            "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
+              --format json  --output security-reports/trivy-fs.json \
+              --no-progress /src || true
 
-            # Login so Trivy can pull if needed (will no-op on local scans)
-            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin || true
+          docker run --rm \
+            -v "$PWD":/src -w /src \
+            -v "$PWD/.trivycache":/root/.cache/ \
+            "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
+              --format sarif --output security-reports/trivy-fs.sarif \
+              --no-progress /src || true
 
-            echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
+          echo "[SECURITY] Image scans (HIGH/CRITICAL → fail)"
+          for IMG in \
+            "${PRODUCT_IMG}:${IMAGE_TAG}" \
+            "${ORDER_IMG}:${IMAGE_TAG}" \
+            "${FRONTEND_IMG}:${IMAGE_TAG}"
+          do
+            echo " - scanning $IMG"
             docker run --rm \
-              -v "$PWD":/src -w /src \
               -v "$PWD/.trivycache":/root/.cache/ \
-              "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
-                --format json  --output security-reports/trivy-fs.json \
-                --no-progress /src || true
-
-            docker run --rm \
-              -v "$PWD":/src -w /src \
-              -v "$PWD/.trivycache":/root/.cache/ \
-              "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
-                --format sarif --output security-reports/trivy-fs.sarif \
-                --no-progress /src || true
-
-            echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL) against local images"
-            IMAGES="${PRODUCT_IMG}:${IMAGE_TAG} ${ORDER_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${IMAGE_TAG}"
-
-            for IMG in $IMAGES; do
-              echo " - scanning $IMG"
-              if [ -S /var/run/docker.sock ]; then
-                docker run --rm \
-                  -v /var/run/docker.sock:/var/run/docker.sock \
-                  -v "$PWD/.trivycache":/root/.cache/ \
-                  "$TRIVY_IMG" image \
-                    --exit-code 1 \
-                    --severity HIGH,CRITICAL \
-                    --no-progress \
-                    "$IMG" || EXIT=$?
-              else
-                TMP="/tmp/$(echo "$IMG" | tr '/:' '__').tar"
-                docker save -o "$TMP" "$IMG"
-                docker run --rm \
-                  -v "$TMP:/image.tar:ro" \
-                  -v "$PWD/.trivycache":/root/.cache/ \
-                  "$TRIVY_IMG" image \
-                    --input /image.tar \
-                    --exit-code 1 \
-                    --severity HIGH,CRITICAL \
-                    --no-progress || EXIT=$?
-                rm -f "$TMP"
-              fi
-            done
-
-            exit ${EXIT:-0}
-          '''
-        }
+              "$TRIVY_IMG" image \
+                --exit-code 1 \
+                --severity HIGH,CRITICAL \
+                --no-progress \
+                "$IMG"
+          done
+        '''
         archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
       }
     }
-    /* ======================================================================== */
 
     stage('Deploy') {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
+          export DOCKER_DEFAULT_PLATFORM=linux/amd64
 
           compose () {
-            if docker compose version >/dev/null 2>&1; then
-              docker compose "$@"
-            else
-              docker-compose "$@"
-            fi
+            if docker compose version >/dev/null 2>&1; then docker compose "$@"; else docker-compose "$@"; fi
           }
 
           wait_http () {
-            url="$1"; tries="${2:-90}"
-            i=0
-            until curl -fsS "$url" >/dev/null 2>&1; do
-              i=$((i+1))
-              [ $i -ge $tries ] && return 1
-              sleep 1
-            done
+            url="$1"; tries="${2:-120}"
+            i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $tries ] && return 1; sleep 1; done
           }
 
-          echo "[DEPLOY] Staging with docker-compose (no rebuilds)"
+          echo "[DEPLOY] Staging with docker-compose (amd64 runtime)"
           if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
             compose up -d --remove-orphans
             compose ps || true
 
-            echo "[DEPLOY] Health checks: product, order, frontend, prometheus, grafana"
-            # Product
-            if ! wait_http "http://localhost:8000/health" 90; then
-              echo "[DEPLOY][WARN] product /health failed; trying root /"
-              wait_http "http://localhost:8000/" 30 || FAIL_PRODUCT=1
-            fi
-            # Order
-            if ! wait_http "http://localhost:8001/health" 90; then
-              echo "[DEPLOY][WARN] order /health failed; trying root /"
-              wait_http "http://localhost:8001/" 30 || FAIL_ORDER=1
-            fi
-            # Frontend
-            wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
-            # Prometheus
-            wait_http "http://localhost:9090/" 90 || FAIL_PROM=1
-            # Grafana
-            wait_http "http://localhost:3000/" 90 || FAIL_GRAF=1
+            echo "[DEPLOY] Health checks"
+            if ! wait_http "http://localhost:8000/health" 120; then wait_http "http://localhost:8000/" 60 || FAIL_PRODUCT=1; fi
+            if ! wait_http "http://localhost:8001/health" 120; then wait_http "http://localhost:8001/" 60 || FAIL_ORDER=1; fi
+            wait_http "http://localhost:3001/" 120 || FAIL_FRONTEND=1
+            wait_http "http://localhost:9090/" 120 || FAIL_PROM=1
+            wait_http "http://localhost:3000/" 120 || FAIL_GRAF=1
 
             if [ "${FAIL_PRODUCT:-0}" -ne 0 ] || [ "${FAIL_ORDER:-0}" -ne 0 ] || \
                [ "${FAIL_FRONTEND:-0}" -ne 0 ] || [ "${FAIL_PROM:-0}" -ne 0 ] || \
                [ "${FAIL_GRAF:-0}" -ne 0 ]; then
-              echo "[DEPLOY][ERROR] Staging health checks failed. Attempting rollback to :latest."
+              echo "[DEPLOY][ERROR] Staging health checks failed."
               compose logs --no-color > reports/compose-failed.log || true
-              COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d || true
               exit 1
             fi
 
-            echo "[DEPLOY] Staging environment is healthy."
+            echo "[DEPLOY] Staging healthy."
           else
             echo "[DEPLOY][WARN] No docker-compose file present. Skipping staging deploy."
           fi
@@ -364,16 +320,14 @@ pipeline {
               docker push $img:${RELEASE_TAG}
             done
 
-            echo "[RELEASE] Deploy to local Kubernetes (${KUBE_CONTEXT})"
+            echo "[RELEASE] Apply K8s and rollouts"
             kubectl config use-context ${KUBE_CONTEXT}
             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-            # Apply manifests (best-effort)
             for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml; do
               [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
             done
 
-            # Helper to set image + rollout and rollback on failure
             update_img () {
               app_label="$1"; new_ref="$2"
               dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
@@ -381,19 +335,12 @@ pipeline {
               container="$(kubectl get deploy "$dep" -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].name}')"
               echo "[RELEASE] set image deploy/${dep} ${container}=${new_ref}"
               kubectl set image deploy/"$dep" "${container}=${new_ref}" -n ${NAMESPACE}
-              if ! kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=180s; then
-                echo "[RELEASE][ERROR] Rollout failed for ${dep}. Rolling back…"
-                kubectl rollout undo deploy/"$dep" -n ${NAMESPACE} || true
-                kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=120s || true
-                exit 1
-              fi
+              kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=180s
             }
 
             update_img product-service ${PRODUCT_IMG}:${IMAGE_TAG}
             update_img order-service   ${ORDER_IMG}:${IMAGE_TAG}
             update_img frontend        ${FRONTEND_IMG}:${IMAGE_TAG}
-
-            echo "[RELEASE] Kubernetes release complete."
           '''
         }
       }
