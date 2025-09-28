@@ -3,6 +3,7 @@ pipeline {
 
   triggers {
     // poll Git every ~2 minutes
+    //trigger
     pollSCM('H/2 * * * *')
   }
 
