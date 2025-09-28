@@ -17,7 +17,6 @@ pipeline {
     ORDER_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
     FRONTEND_IMG    = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
 
-
     LOCAL_IMG_PRODUCT  = 'week09_example02_product_service:latest'
     LOCAL_IMG_ORDER    = 'week09_example02_order_service:latest'
     LOCAL_IMG_FRONTEND = 'week09_example02_frontend:latest'
@@ -62,7 +61,7 @@ pipeline {
             echo "[BUILD] No docker-compose file found; skipping compose build."
           fi
 
-          echo "[BUILD] Re-tag local images → Docker Hub"
+          echo "[BUILD] Re-tag local images → Docker Hub names"
           docker image inspect ${LOCAL_IMG_PRODUCT}  >/dev/null
           docker image inspect ${LOCAL_IMG_ORDER}    >/dev/null
           docker image inspect ${LOCAL_IMG_FRONTEND} >/dev/null
@@ -322,7 +321,6 @@ fi
       }
     }
   }
-
 
   post {
     success { echo "Pipeline succeeded - ${IMAGE_TAG} (${RELEASE_TAG})" }
