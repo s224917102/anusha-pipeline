@@ -8,10 +8,8 @@ pipeline {
   }
 
   environment {
-    // Ensure docker/kubectl are on PATH for every sh step
     PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-    // ===== Registry (Docker Hub) =====
     DOCKERHUB_NS    = 's224917102'
     DOCKERHUB_CREDS = 'dockerhub-s224917102'
     REGISTRY        = 'docker.io'
@@ -19,24 +17,20 @@ pipeline {
     ORDER_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
     FRONTEND_IMG    = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
 
-    // ===== Local images produced by compose build (no localhost prefix) =====
     LOCAL_IMG_PRODUCT  = 'week09_example02_product_service:latest'
     LOCAL_IMG_ORDER    = 'week09_example02_order_service:latest'
     LOCAL_IMG_FRONTEND = 'week09_example02_frontend:latest'
 
-    // ===== K8s (local) =====
-    KUBE_CONTEXT  = 'docker-desktop'   // or 'minikube'
+    KUBE_CONTEXT  = 'docker-desktop'
     NAMESPACE     = 'default'
     K8S_DIR       = 'k8s'
 
-    // ===== SonarCloud =====
-    SONARQUBE = 'SonarQube'      // Manage Jenkins » System » SonarQube servers (name)
-    SCANNER   = 'SonarScanner'   // Manage Jenkins » Global Tool Configuration (name)
+    SONARQUBE = 'SonarQube'
+    SCANNER   = 'SonarScanner'
     SONAR_PROJECT_KEY  = 'sit753-anusha'
     SONAR_PROJECT_NAME = 'SIT753 Microservices'
     SONAR_SOURCES      = '.'
 
-    // ===== Project paths =====
     PRODUCT_DIR  = 'backend/product_service'
     ORDER_DIR    = 'backend/order_service'
     FRONTEND_DIR = 'frontend'
@@ -47,14 +41,12 @@ pipeline {
     stage('Build') {
       steps {
         checkout scm
-
         script {
           env.GIT_SHA     = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
           env.IMAGE_TAG   = "${env.GIT_SHA}-${env.BUILD_NUMBER}"
           env.RELEASE_TAG = "v${env.BUILD_NUMBER}.${env.GIT_SHA}"
           echo "[BUILD] Computed IMAGE_TAG=${env.IMAGE_TAG} | RELEASE_TAG=${env.RELEASE_TAG}"
         }
-
         sh '''#!/usr/bin/env bash
           set -euo pipefail
           echo "[CHECK] PATH=$PATH"
@@ -119,34 +111,40 @@ pipeline {
             done
           done
 
-          py() { python3 -m venv "$1" && . "$1/bin/activate" && pip install -U pip wheel >/dev/null; }
+          py() { python3 -m venv "$1" && . "$1/bin/activate" && python -m pip install -U pip wheel >/dev/null; }
 
           echo "[TEST] === product_service unit tests ==="
           if [ -d ${PRODUCT_DIR} ]; then
             py .venv_prod
             . .venv_prod/bin/activate
-            pip install -r ${PRODUCT_DIR}/requirements.txt >/dev/null
-            [ -f ${PRODUCT_DIR}/requirements-dev.txt ] && pip install -r ${PRODUCT_DIR}/requirements-dev.txt >/dev/null || true
-            pip install pytest pytest-timeout >/dev/null
-
+            python -m pip install -r ${PRODUCT_DIR}/requirements.txt >/dev/null
+            [ -f ${PRODUCT_DIR}/requirements-dev.txt ] && python -m pip install -r ${PRODUCT_DIR}/requirements-dev.txt >/dev/null || true
+            # Pin pytest+plugin and verify plugin is importable
+            python -m pip install "pytest>=8.0,<9.0" "pytest-timeout==2.3.1" >/dev/null
+            python - <<'PY'
+import importlib.util, sys
+print("[CHECK] pytest-timeout present:", importlib.util.find_spec("pytest_timeout") is not None)
+PY
+            # Even if autoload is disabled globally, force-load the plugin:
             export POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DB=products POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
-            export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-            PYTEST_ADDOPTS="-q -x --maxfail=1 --durations=10 --timeout=60 --timeout-method=thread"
-            pytest ${PRODUCT_DIR}/tests --junitxml=product_unit.xml $PYTEST_ADDOPTS
+            PYTEST_OPTS="-q -x --maxfail=1 --durations=10 --timeout=60 --timeout-method=thread"
+            pytest -p pytest_timeout ${PRODUCT_DIR}/tests --junitxml=product_unit.xml $PYTEST_OPTS
           fi
 
           echo "[TEST] === order_service unit tests ==="
           if [ -d ${ORDER_DIR} ]; then
             py .venv_order
             . .venv_order/bin/activate
-            pip install -r ${ORDER_DIR}/requirements.txt >/dev/null
-            [ -f ${ORDER_DIR}/requirements-dev.txt ] && pip install -r ${ORDER_DIR}/requirements-dev.txt >/dev/null || true
-            pip install pytest pytest-timeout >/dev/null
-
+            python -m pip install -r ${ORDER_DIR}/requirements.txt >/dev/null
+            [ -f ${ORDER_DIR}/requirements-dev.txt ] && python -m pip install -r ${ORDER_DIR}/requirements-dev.txt >/dev/null || true
+            python -m pip install "pytest>=8.0,<9.0" "pytest-timeout==2.3.1" >/dev/null
+            python - <<'PY'
+import importlib.util, sys
+print("[CHECK] pytest-timeout present:", importlib.util.find_spec("pytest_timeout") is not None)
+PY
             export POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_DB=orders POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
-            export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-            PYTEST_ADDOPTS="-q -x --maxfail=1 --durations=10 --timeout=60 --timeout-method=thread"
-            pytest ${ORDER_DIR}/tests --junitxml=order_unit.xml $PYTEST_ADDOPTS
+            PYTEST_OPTS="-q -x --maxfail=1 --durations=10 --timeout=60 --timeout-method=thread"
+            pytest -p pytest_timeout ${ORDER_DIR}/tests --junitxml=order_unit.xml $PYTEST_OPTS
           fi
 
           echo "[TEST] Stop DB containers"
@@ -159,14 +157,18 @@ pipeline {
 
             py .venv_int
             . .venv_int/bin/activate
-            pip install pytest pytest-timeout requests >/dev/null
+            python -m pip install "pytest>=8.0,<9.0" "pytest-timeout==2.3.1" requests >/dev/null
+            python - <<'PY'
+import importlib.util, sys
+print("[CHECK] pytest-timeout present:", importlib.util.find_spec("pytest_timeout") is not None)
+PY
+
             export PRODUCT_BASE=${PRODUCT_BASE:-http://localhost:8000}
             export ORDER_BASE=${ORDER_BASE:-http://localhost:8001}
-            export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-            PYTEST_ADDOPTS="-q -x --maxfail=1 --durations=10 --timeout=60 --timeout-method=thread"
+            PYTEST_OPTS="-q -x --maxfail=1 --durations=10 --timeout=60 --timeout-method=thread"
 
-            pytest tests/integration/test_product_integration.py tests/integration/test_order_integration.py \
-              --junitxml=integration.xml $PYTEST_ADDOPTS || (docker compose down -v || docker-compose down -v; exit 1)
+            pytest -p pytest_timeout tests/integration/test_product_integration.py tests/integration/test_order_integration.py \
+              --junitxml=integration.xml $PYTEST_OPTS || (docker compose down -v || docker-compose down -v; exit 1)
 
             (docker compose down -v || docker-compose down -v)
           else
@@ -188,7 +190,7 @@ pipeline {
           withEnv(["PATH+SCANNER=${tool SCANNER}/bin"]) {
             sh '''#!/usr/bin/env bash
               set -euo pipefail
-              echo "[QUALITY] SonarCloud analysis"
+              echo "[QUALITY] Sonar analysis"
               sonar-scanner \
                 -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
                 -Dsonar.projectName="${SONAR_PROJECT_NAME}" \
@@ -208,12 +210,10 @@ pipeline {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          echo "[SECURITY] Trivy fs scan — HIGH/CRITICAL cause failure"
+          echo "[SECURITY] Trivy fs"
           docker run --rm -v "$(pwd)":/src aquasec/trivy:0.55.0 fs --exit-code 1 --severity HIGH,CRITICAL /src
-
-          echo "[SECURITY] Trivy image scans — HIGH/CRITICAL cause failure"
+          echo "[SECURITY] Trivy images"
           for img in ${PRODUCT_IMG}:${IMAGE_TAG} ${ORDER_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${IMAGE_TAG}; do
-            echo "Scanning $img"
             docker run --rm aquasec/trivy:0.55.0 image --exit-code 1 --severity HIGH,CRITICAL "$img"
           done
         '''
@@ -224,7 +224,7 @@ pipeline {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          echo "[DEPLOY] kubectl context: ${KUBE_CONTEXT}"
+          echo "[DEPLOY] Context ${KUBE_CONTEXT}"
           kubectl config use-context ${KUBE_CONTEXT}
           kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
@@ -236,11 +236,9 @@ pipeline {
           kubectl set image deploy/order-service   order-service=${ORDER_IMG}:${IMAGE_TAG}   -n ${NAMESPACE} || true
           kubectl set image deploy/frontend        frontend=${FRONTEND_IMG}:${IMAGE_TAG}     -n ${NAMESPACE} || true
 
-          echo "[DEPLOY] Wait for rollouts"
           kubectl rollout status deploy/product-service -n ${NAMESPACE} --timeout=180s || true
           kubectl rollout status deploy/order-service   -n ${NAMESPACE} --timeout=180s || true
           kubectl rollout status deploy/frontend        -n ${NAMESPACE} --timeout=180s || true
-          kubectl get all -n ${NAMESPACE}
         '''
       }
     }
@@ -250,14 +248,11 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''#!/usr/bin/env bash
             set -euo pipefail
-            echo "[RELEASE] Login & push tags"
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-
             for i in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
               docker push $i:${IMAGE_TAG}
               docker push $i:latest
             done
-
             docker tag ${PRODUCT_IMG}:${IMAGE_TAG}  ${PRODUCT_IMG}:${RELEASE_TAG}
             docker tag ${ORDER_IMG}:${IMAGE_TAG}    ${ORDER_IMG}:${RELEASE_TAG}
             docker tag ${FRONTEND_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${RELEASE_TAG}
@@ -265,7 +260,6 @@ pipeline {
               docker push $i:${RELEASE_TAG}
             done
 
-            echo "[RELEASE] Git tag"
             git config user.email "ci@jenkins"
             git config user.name  "Jenkins CI"
             git tag -a "${RELEASE_TAG}" -m "Release ${RELEASE_TAG}" || true
@@ -279,7 +273,7 @@ pipeline {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          echo "[MONITOR] Smoke /health checks"
+          echo "[MONITOR] Health checks"
           PRODUCT_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=product-service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
           ORDER_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=order-service   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
