@@ -198,52 +198,63 @@ pipeline {
       }
     }
 
-    /* ========================= UPDATED SECURITY STAGE ========================= */
     stage('Security') {
-      steps {
-        sh '''#!/usr/bin/env bash
-          set -euo pipefail
+        steps {
+            sh '''#!/usr/bin/env bash
+            set -euo pipefail
 
-          echo "[SECURITY] Prepare cache & reports dirs"
-          mkdir -p security-reports .trivycache
+            echo "[SECURITY] Prepare cache & reports dirs"
+            mkdir -p security-reports .trivycache
 
-          TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
+            TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
 
-          echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
-          docker run --rm \
-            -v "$PWD":/src -w /src \
-            -v "$PWD/.trivycache":/root/.cache/ \
-            "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
-              --format json  --output security-reports/trivy-fs.json \
-              --no-progress /src || true
-
-          docker run --rm \
-            -v "$PWD":/src -w /src \
-            -v "$PWD/.trivycache":/root/.cache/ \
-            "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
-              --format sarif --output security-reports/trivy-fs.sarif \
-              --no-progress /src || true
-
-          echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL)"
-          IMAGES="${REGISTRY}/${DOCKERHUB_NS}/product_service:${IMAGE_TAG} \
-                  ${REGISTRY}/${DOCKERHUB_NS}/order_service:${IMAGE_TAG} \
-                  ${REGISTRY}/${DOCKERHUB_NS}/frontend:${IMAGE_TAG}"
-
-          for IMG in $IMAGES; do
-            echo " - scanning $IMG"
+            echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
             docker run --rm \
-              -v "$PWD/.trivycache":/root/.cache/ \
-              "$TRIVY_IMG" image \
-                --exit-code 1 \
-                --severity HIGH,CRITICAL \
-                --no-progress \
-                "$IMG"
-          done
-        '''
-        // Archive advisory reports so you can download them from Jenkins
-        archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
-      }
+                -v "$PWD":/src -w /src \
+                -v "$PWD/.trivycache":/root/.cache/ \
+                "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
+                --format json  --output security-reports/trivy-fs.json \
+                --no-progress /src || true
+
+            docker run --rm \
+                -v "$PWD":/src -w /src \
+                -v "$PWD/.trivycache":/root/.cache/ \
+                "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
+                --format sarif --output security-reports/trivy-fs.sarif \
+                --no-progress /src || true
+
+            echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL) against **local** images"
+            # Helper: pick first tag that exists locally (registry tag or local build tag)
+            choose_img () {
+                for t in "$@"; do
+                if docker image inspect "$t" >/dev/null 2>&1; then
+                    echo "$t"; return 0
+                fi
+                done
+                return 1
+            }
+
+            PRODUCT_TAG="$(choose_img "${PRODUCT_IMG}:${IMAGE_TAG}" "${LOCAL_IMG_PRODUCT}")"
+            ORDER_TAG="$(choose_img   "${ORDER_IMG}:${IMAGE_TAG}"   "${LOCAL_IMG_ORDER}")"
+            FRONT_TAG="$(choose_img   "${FRONTEND_IMG}:${IMAGE_TAG}" "${LOCAL_IMG_FRONTEND}")"
+
+            for IMG in "$PRODUCT_TAG" "$ORDER_TAG" "$FRONT_TAG"; do
+                [ -z "$IMG" ] && { echo "[SECURITY][WARN] No local tag found, skipping one image"; continue; }
+                echo " - scanning $IMG"
+                docker run --rm \
+                -v "$PWD/.trivycache":/root/.cache/ \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                "$TRIVY_IMG" image \
+                    --exit-code 1 \
+                    --severity HIGH,CRITICAL \
+                    --no-progress \
+                    "$IMG"
+            done
+            '''
+            archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
+        }
     }
+
     /* ========================================================================= */
 
     stage('Deploy') {
