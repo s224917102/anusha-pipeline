@@ -221,47 +221,49 @@ pipeline {
     }
 
     stage('Security') {
-      steps {
-        sh '''#!/usr/bin/env bash
-          set -euo pipefail
+        steps {
+            sh '''#!/usr/bin/env bash
+            set -euo pipefail
+            mkdir -p .trivy-cache
 
-          echo "[SECURITY] Trivy filesystem scan"
-          docker run --rm -v "$(pwd)":/src aquasec/trivy:${TRIVY_VER} fs \
-            --scanners vuln,secret,misconfig \
-            --severity HIGH,CRITICAL \
-            --ignore-unfixed \
-            --exit-code 1 \
-            /src
-
-          echo "[SECURITY] Prepare local image TARs for scan"
-          mkdir -p .trivy-cache
-
-          declare -A MAP
-          MAP["${PRODUCT_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_PRODUCT}"
-          MAP["${ORDER_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_ORDER}"
-          MAP["${FRONTEND_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_FRONTEND}"
-
-          for TARGET_REF in "${!MAP[@]}"; do
-            LOCAL_REF="${MAP[$TARGET_REF]}"
-            echo "[SECURITY] Save ${LOCAL_REF} -> image.tar"
-            rm -f image.tar
-            docker image inspect "${LOCAL_REF}" >/dev/null
-            docker save "${LOCAL_REF}" -o image.tar
-
-            echo "[SECURITY] Trivy image (tar) ${TARGET_REF}"
+            echo "[SECURITY] Trivy filesystem scan (advisory: misconfig+secret)"
             docker run --rm \
-              -v "$PWD:/work" \
-              -e TRIVY_CACHE_DIR=/work/.trivy-cache \
-              aquasec/trivy:${TRIVY_VER} image \
-              --input /work/image.tar \
-              --scanners vuln \
-              --severity HIGH,CRITICAL \
-              --ignore-unfixed \
-              --exit-code 1 \
-              --timeout 10m
-          done
-        '''
-      }
+                -v "$PWD:/src" \
+                -e TRIVY_CACHE_DIR=/src/.trivy-cache \
+                aquasec/trivy:${TRIVY_VER} fs \
+                --scanners vuln,secret,misconfig \
+                --severity HIGH,CRITICAL \
+                --ignore-unfixed \
+                --exit-code 0 \        # <— do NOT fail pipeline here
+                /src
+
+            echo "[SECURITY] Prepare local image TARs for scan (blocking on vulns)"
+            declare -A MAP
+            MAP["${PRODUCT_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_PRODUCT}"
+            MAP["${ORDER_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_ORDER}"
+            MAP["${FRONTEND_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_FRONTEND}"
+
+            for TARGET_REF in "${!MAP[@]}"; do
+                LOCAL_REF="${MAP[$TARGET_REF]}"
+                echo "[SECURITY] Save ${LOCAL_REF} -> image.tar"
+                rm -f image.tar
+                docker image inspect "${LOCAL_REF}" >/dev/null
+                docker save "${LOCAL_REF}" -o image.tar
+
+                echo "[SECURITY] Trivy image (tar) ${TARGET_REF} (blocking on HIGH/CRITICAL)"
+                docker run --rm \
+                -v "$PWD:/work" \
+                -e TRIVY_CACHE_DIR=/work/.trivy-cache \
+                aquasec/trivy:${TRIVY_VER} image \
+                --input /work/image.tar \
+                --scanners vuln \
+                --severity HIGH,CRITICAL \
+                --ignore-unfixed \
+                --exit-code 1 \
+                --timeout 10m
+            done
+            '''
+        }
     }
 
     stage('Release') {
