@@ -26,9 +26,9 @@ pipeline {
     K8S_DIR       = 'k8s'
 
     SONARQUBE = 'SonarQube'
-    SCANNER   = 'SonarScanner'
-    SONAR_PROJECT_KEY  = 's224917102_DevOpsPipeline'
-    SONAR_PROJECT_NAME = 'DevOpsPipeline'
+    SCANNER   = 'SonarScanner' // not used now, but keeping for reference
+    SONAR_PROJECT_KEY  = 'sit753-anusha'
+    SONAR_PROJECT_NAME = 'SIT753 Microservices'
     SONAR_SOURCES      = '.'
 
     PRODUCT_DIR  = 'backend/product_service'
@@ -205,21 +205,28 @@ pipeline {
     stage('Code Quality') {
       steps {
         withSonarQubeEnv("${SONARQUBE}") {
-          withEnv(["PATH+SCANNER=${tool SCANNER}/bin"]) {
-            sh '''#!/usr/bin/env bash
-              set -euo pipefail
-              echo "[QUALITY] Sonar analysis"
-              sonar-scanner \
+          sh '''#!/usr/bin/env bash
+            set -euo pipefail
+            echo "[QUALITY] Sonar analysis via Dockerized scanner (bundled Java)"
+            echo "[QUALITY] SONAR_HOST_URL=${SONAR_HOST_URL}"
+            echo "[QUALITY] Project Key=${SONAR_PROJECT_KEY}, Name=${SONAR_PROJECT_NAME}"
+
+            docker run --rm \
+              -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+              -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
+              -v "$PWD:/usr/src" \
+              -w /usr/src \
+              sonarsource/sonar-scanner-cli:latest \
                 -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
                 -Dsonar.projectName="${SONAR_PROJECT_NAME}" \
                 -Dsonar.projectVersion=${IMAGE_TAG} \
+                -Dsonar.projectBaseDir=. \
                 -Dsonar.sources=${SONAR_SOURCES} \
-                -Dsonar.python.version=3.10 \
-                -Dsonar.exclusions=**/.git/**,**/__pycache__/**,**/.venv/**,**/*.png,**/*.jpg,**/*.svg \
                 -Dsonar.tests=${PRODUCT_DIR}/tests,${ORDER_DIR}/tests \
-                -Dsonar.test.inclusions=**/tests/**
-            '''
-          }
+                -Dsonar.test.inclusions=**/tests/** \
+                -Dsonar.python.version=3.10 \
+                -Dsonar.exclusions=**/.git/**,**/__pycache__/**,**/.venv/**,**/*.png,**/*.jpg,**/*.svg
+          '''
         }
       }
     }
