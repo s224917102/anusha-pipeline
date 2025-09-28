@@ -204,30 +204,50 @@ pipeline {
 
     stage('Code Quality') {
         steps {
+            // This sets SONAR_HOST_URL and (depending on plugin version) SONAR_AUTH_TOKEN
             withSonarQubeEnv("${SONARQUBE}") {
+            // Your secret text credential that stores the actual SonarCloud token
                 withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
                     sh '''#!/usr/bin/env bash
                     set -euo pipefail
                     echo "[QUALITY] Sonar analysis via Dockerized scanner (bundled Java)"
 
-                    # Require project properties at repo root
+                    # Must exist at repo root
                     if [ ! -f "sonar-project.properties" ]; then
-                        echo "[QUALITY] ERROR: sonar-project.properties not found at repo root."
+                        echo "[QUALITY][ERROR] sonar-project.properties not found at repo root."
                         exit 1
                     fi
 
-                    # Force amd64 on Apple Silicon (arm64) hosts
+                    # Prefer explicit Jenkins credential; fall back to token provided by withSonarQubeEnv if any
+                    TOKEN="${SONAR_TOKEN:-${SONAR_AUTH_TOKEN:-}}"
+                    if [ -z "$TOKEN" ]; then
+                        echo "[QUALITY][ERROR] No token available. Check Jenkins credential ID=SONAR_TOKEN or your SonarQube server config."
+                        exit 1
+                    fi
+
+                    HURL="${SONAR_HOST_URL:-https://sonarcloud.io}"
+                    echo "[QUALITY] SONAR_HOST_URL=$HURL"
+
+                    # Quick preflight: validate token against SonarCloud to avoid confusing scanner 403
+                    echo "[QUALITY] Validating token with SonarCloud…"
+                    if ! OUT="$(curl -sS -u "${TOKEN}:" "${HURL%/}/api/authentication/validate")"; then
+                        echo "[QUALITY][ERROR] Could not reach ${HURL}. Network/DNS issue?"
+                        exit 1
+                    fi
+                    echo "$OUT" | grep -q '"valid":true' || {
+                        echo "[QUALITY][ERROR] Sonar token is invalid for ${HURL} (got: $OUT)."
+                        echo "  - Make sure the token belongs to the organization in sonar-project.properties"
+                        echo "  - Token must have 'Execute analysis' permission on project/organization"
+                        exit 1
+                    }
+
+                    # Force amd64 on Apple Silicon hosts
                     PLATFORM_FLAG="--platform=linux/amd64"
 
-                    echo "[QUALITY] SONAR_HOST_URL=${SONAR_HOST_URL:-'(from properties)'}"
-                    if [ -z "${SONAR_TOKEN:-}" ]; then
-                        echo "[QUALITY] ERROR: SONAR_TOKEN env var not present from credentials."
-                        exit 1
-                    fi
-
+                    # Run official scanner image (bundles Java)
                     docker run --rm ${PLATFORM_FLAG} \
-                        -e SONAR_HOST_URL="${SONAR_HOST_URL:-}" \
-                        -e SONAR_TOKEN="${SONAR_TOKEN}" \
+                        -e SONAR_HOST_URL="$HURL" \
+                        -e SONAR_TOKEN="$TOKEN" \
                         -v "$PWD:/usr/src" \
                         -w /usr/src \
                         sonarsource/sonar-scanner-cli:latest
@@ -236,6 +256,7 @@ pipeline {
             }
         }
     }
+
 
 
 
