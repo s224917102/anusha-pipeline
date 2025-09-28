@@ -174,20 +174,26 @@ pipeline {
     }
 
     stage('Code Quality') {
-        steps {
-            withSonarQubeEnv("${SONARQUBE}") {
-            sh '''
-                set -eu
-                echo "[QUALITY] Sonar analysis via Docker (bundled Java)"
-                docker run --rm --platform=linux/amd64 \
-                -v "$PWD:/usr/src" -w /usr/src \
-                -e SONAR_HOST_URL="$SONAR_HOST_URL" \
-                -e SONAR_LOGIN="$SONAR_AUTH_TOKEN" \
-                -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
-                sonarsource/sonar-scanner-cli:5.0
+      steps {
+        withSonarQubeEnv("${SONARQUBE}") {
+          withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
+            sh '''#!/usr/bin/env bash
+              set -euo pipefail
+              echo "[QUALITY] Sonar analysis via Dockerized scanner (bundled Java)"
+              if [ ! -f "sonar-project.properties" ]; then
+                echo "[QUALITY][ERROR] sonar-project.properties not found at repo root."
+                exit 1
+              fi
+              TOKEN="${SONAR_TOKEN:-${SONAR_AUTH_TOKEN:-}}"
+              [ -z "$TOKEN" ] && { echo "[QUALITY][ERROR] No token available. Provide Jenkins secret 'SONAR_TOKEN'."; exit 1; }
+              HURL="${SONAR_HOST_URL:-https://sonarcloud.io}"
+              OUT="$(curl -sS -u "${TOKEN}:" "${HURL%/}/api/authentication/validate" || true)"
+              echo "$OUT" | grep -q '"valid":true' || { echo "[QUALITY][ERROR] Invalid Sonar token for ${HURL}: $OUT"; exit 1; }
+              docker run --rm --platform=linux/amd64 -e SONAR_HOST_URL="$HURL" -e SONAR_TOKEN="$TOKEN" -v "$PWD:/usr/src" -w /usr/src sonarsource/sonar-scanner-cli:latest
             '''
-            }
+          }
         }
+      }
     }
 
     stage('Security') {
