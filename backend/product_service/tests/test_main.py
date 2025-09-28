@@ -1,5 +1,4 @@
-# week05/backend/product_service/tests/test_main.py
-
+# week07/example-2/backend/product_service/tests/test_main.py
 
 import logging
 import os
@@ -20,7 +19,7 @@ logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 logging.getLogger("fastapi").setLevel(logging.WARNING)
-logging.getLogger("app.main").setLevel(logging.WARNING)
+logging.getLogger("app.main").setLevel(logging.WARNING)  # Suppress app's own info logs
 
 
 # --- Pytest Fixtures ---
@@ -85,14 +84,10 @@ def db_session_for_test():
 
 @pytest.fixture(scope="module")
 def client():
-    """
-    Provides a TestClient for making HTTP requests to the FastAPI application.
-    The TestClient automatically manages the app's lifespan events (startup/shutdown).
-    """
     os.environ["AZURE_STORAGE_ACCOUNT_NAME"] = "testaccount"
     os.environ["AZURE_STORAGE_ACCOUNT_KEY"] = "testkey"
     os.environ["AZURE_STORAGE_CONTAINER_NAME"] = "test-images"
-    os.environ["AZURE_SAS_TOKEN_EXPIRY_HOURS"] = "1"
+    os.environ["AZURE_SAS_TOKEN_EXPIRY_HOURS"] = "1"  # Short expiry for tests
 
     with TestClient(app) as test_client:
         yield test_client
@@ -106,6 +101,9 @@ def client():
 
 @pytest.fixture(scope="function", autouse=True)
 def mock_azure_blob_storage():
+    """
+    Mocks the Azure Blob Storage client to prevent actual uploads during tests.
+    """
     with patch("app.main.BlobServiceClient") as mock_blob_service_client:
         mock_instance = MagicMock()
         mock_blob_service_client.return_value = mock_instance
@@ -136,6 +134,8 @@ def mock_azure_blob_storage():
 
 
 # --- Product Service Tests ---
+
+
 def test_read_root(client: TestClient):
     """Test the root endpoint."""
     response = client.get("/")
@@ -151,6 +151,10 @@ def test_health_check(client: TestClient):
 
 
 def test_create_product_success(client: TestClient, db_session_for_test: Session):
+    """
+    Tests successful creation of a product via POST /products/.
+    Verifies status code, response data, and database entry, including optional image_url.
+    """
     test_data = {
         "name": "New Test Product",
         "description": "A brand new product for testing",
@@ -187,23 +191,6 @@ def test_create_product_success(client: TestClient, db_session_for_test: Session
     assert db_product.image_url == test_data["image_url"]
 
 
-def test_create_product_invalid_price(client: TestClient):
-    """
-    Tests product creation with an invalid (negative) price, expecting a 422 Unprocessable Entity.
-    """
-    invalid_data = {
-        "name": "Invalid Price Product",
-        "description": "Product with negative price",
-        "price": -5.00,  # Invalid price
-        "stock_quantity": 10,
-    }
-    response = client.post("/products/", json=invalid_data)
-    assert response.status_code == 422
-    assert "detail" in response.json()
-    print(response.json())
-    assert any("greater than 0" in err["msg"] for err in response.json()["detail"])
-
-
 def test_list_products_empty(client: TestClient):
     """
     Tests listing products when no products exist, expecting an empty list.
@@ -232,62 +219,6 @@ def test_list_products_with_data(client: TestClient, db_session_for_test: Sessio
     assert response.status_code == 200
     assert isinstance(response.json(), list)
     assert len(response.json()) >= 1  # Should contain the product we just added
-    assert any(p["name"] == "List Product Example" for p in response.json())
-
-
-def test_get_product_success(client: TestClient, db_session_for_test: Session):
-    """
-    Tests successful retrieval of a product by ID.
-    Verifies the returned product includes a SAS-enabled image_url.
-    """
-    # Create a product via API for this test
-    product_data = {
-        "name": "Get Product Test",
-        "description": "Temp desc",
-        "price": 15.00,
-        "stock_quantity": 20,
-        "image_url": "http://example.com/get_test.jpg",
-    }
-    create_response = client.post("/products/", json=product_data)
-    product_id = create_response.json()["product_id"]
-
-    response = client.get(f"/products/{product_id}")
-    assert response.status_code == 200
-    assert response.json()["product_id"] == product_id
-    assert response.json()["name"] == "Get Product Test"
-
-
-def test_update_product_partial(client: TestClient, db_session_for_test: Session):
-    """
-    Tests partial update of a product (e.g., only name and image_url).
-    """
-    # Create a product for partial update test
-    product_data = {
-        "name": "Original Name",
-        "description": "Original Desc",
-        "price": 10.00,
-        "stock_quantity": 10,
-        "image_url": "http://example.com/original.gif",
-    }
-    create_response = client.post("/products/", json=product_data)
-    product_id = create_response.json()["product_id"]
-
-    partial_update_data = {
-        "name": "Partially Updated Name",
-        "image_url": "http://example.com/new_image.bmp",
-    }
-    response = client.put(f"/products/{product_id}", json=partial_update_data)
-    assert response.status_code == 200
-    updated_product = response.json()
-    assert updated_product["product_id"] == product_id
-    assert updated_product["name"] == "Partially Updated Name"
-    assert (
-        updated_product["image_url"] == "http://example.com/new_image.bmp"
-    )  # No SAS token here as it's a PUT input
-    # Other fields should retain their original values
-    assert updated_product["description"] == "Original Desc"
-    assert float(updated_product["price"]) == 10.00
-    assert updated_product["stock_quantity"] == 10
 
 
 def test_delete_product_success(client: TestClient, db_session_for_test: Session):

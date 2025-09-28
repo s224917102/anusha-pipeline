@@ -1,9 +1,9 @@
-# week05/k8s/order-service.yaml
+# week09/example-3/k8s/order-service.yaml
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: order-service-w05-aks
+  name: order-service-w09-aks
   labels:
     app: order-service
 spec:
@@ -15,61 +15,45 @@ spec:
     metadata:
       labels:
         app: order-service
+      annotations:
+        prometheus.io/scrape: 'true' # Instruct Prometheus to scrape this pod
+        prometheus.io/path: '/metrics' # The path where metrics are exposed
+        prometheus.io/port: '8000' # The port where metrics are exposed on the container
     spec:
       containers:
       - name: order-service-container
-        image: durgeshsamariya.azurecr.io/week05ex01or:v1
+        image: docker.io/s224917102/order_service:latest # added imagename
         imagePullPolicy: Always
         ports:
         - containerPort: 8001
         env:
         - name: POSTGRES_HOST
-          value: order-db-service-w05-aks
+          value: order-db-service-w09-aks
         - name: POSTGRES_DB
           valueFrom:
             configMapKeyRef:
-              name: ecomm-config-w05-aks
+              name: ecomm-config-w09-aks
               key: ORDERS_DB_NAME
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
-              name: ecomm-secrets-w05-aks
+              name: ecomm-secrets-w09-aks
               key: POSTGRES_USER
         - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: ecomm-secrets-w05-aks
+              name: ecomm-secrets-w09-aks
               key: POSTGRES_PASSWORD
-        - name: RABBITMQ_HOST
-          valueFrom:
-            configMapKeyRef:
-              name: ecomm-config-w05-aks
-              key: RABBITMQ_HOST
-        - name: RABBITMQ_USER
-          valueFrom:
-            secretKeyRef:
-              name: ecomm-secrets-w05-aks
-              key: RABBITMQ_USER
-        - name: RABBITMQ_PASS
-          valueFrom:
-            secretKeyRef:
-              name: ecomm-secrets-w05-aks
-              key: RABBITMQ_PASS
         - name: PRODUCT_SERVICE_URL
           valueFrom:
             configMapKeyRef:
-              name: ecomm-config-w05-aks
+              name: ecomm-config-w09-aks
               key: PRODUCT_SERVICE_URL
-        - name: CUSTOMER_SERVICE_URL
-          valueFrom:
-            configMapKeyRef:
-              name: ecomm-config-w05-aks
-              key: CUSTOMER_SERVICE_URL
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: order-service-w05-aks
+  name: order-service-w09-aks
   labels:
     app: order-service
 spec:

@@ -1,4 +1,4 @@
-# week05/backend/product_service/Dockerfile
+# week09/example-2/backend/product_service/Dockerfile
 
 FROM python:3.10-slim-buster
 

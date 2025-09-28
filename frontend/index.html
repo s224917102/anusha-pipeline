@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>E-commerce Application (Week 05)</title>
+    <title>E-commerce Catalog & Orders (Week 09 - Example 02)</title>
     <script src="main.js" defer></script>
     <style>
         body {
@@ -51,8 +51,6 @@
             color: #555;
         }
         .form-group input[type="text"],
-        .form-group input[type="email"], /* Added email type */
-        .form-group input[type="password"], /* Added password type */
         .form-group input[type="number"],
         .form-group input[type="file"],
         .form-group textarea,
@@ -87,7 +85,7 @@
             font-weight: bold;
             transition: background-color 0.2s ease-in-out, transform 0.1s ease;
             box-shadow: 0 2px 5px rgba(0, 123, 255, 0.2);
-            margin-top: 10px;
+            margin-top: 10px; /* Added for spacing consistency */
         }
         button:hover {
             background-color: #0056b3;
@@ -100,13 +98,13 @@
             grid-column: 1 / -1;
         }
 
-        /* Product, Customer, Order List Styles */
-        #product-list, #order-list, #customer-list {
+        /* Product List */
+        #product-list, #order-list {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
             gap: 25px;
         }
-        .product-card, .order-card, .customer-card {
+        .product-card, .order-card {
             background-color: #ffffff;
             border: 1px solid #e0e0e0;
             border-radius: 10px;
@@ -116,15 +114,15 @@
             flex-direction: column;
             justify-content: space-between;
             overflow: hidden;
-            position: relative;
+            position: relative; /* For image upload button positioning */
         }
-        .product-card h3, .order-card h3, .customer-card h3 {
+        .product-card h3, .order-card h3 {
             margin-top: 0;
             color: #333;
             font-size: 1.3em;
             margin-bottom: 10px;
         }
-        .product-card p, .order-card p, .customer-card p {
+        .product-card p, .order-card p {
             margin: 5px 0;
             font-size: 0.95em;
             color: #666;
@@ -140,12 +138,12 @@
         }
         .product-card img {
             max-width: 100%;
-            height: 200px;
-            object-fit: contain;
+            height: 200px; /* Fixed height for consistency */
+            object-fit: contain; /* Ensure image fits without cropping */
             border-radius: 8px;
             margin-bottom: 15px;
-            background-color: #e8f0f8;
-            padding: 10px;
+            background-color: #e8f0f8; /* Light background for images */
+            padding: 10px; /* Small padding inside image container */
         }
         .product-card .upload-image-group {
             display: flex;
@@ -171,18 +169,18 @@
             background-color: #218838;
         }
 
-        .product-card .card-actions, .order-card .card-actions, .customer-card .card-actions {
+        .product-card .card-actions, .order-card .card-actions {
             display: flex;
             gap: 10px;
             margin-top: 15px;
             border-top: 1px solid #eee;
             padding-top: 15px;
         }
-        .product-card .delete-btn, .order-card .delete-btn, .customer-card .delete-customer-btn {
+        .product-card .delete-btn, .order-card .delete-btn {
             background-color: #dc3545;
             color: white;
         }
-        .product-card .delete-btn:hover, .order-card .delete-btn:hover, .customer-card .delete-customer-btn:hover {
+        .product-card .delete-btn:hover, .order-card .delete-btn:hover {
             background-color: #c82333;
         }
         .product-card .add-to-cart-btn {
@@ -207,7 +205,7 @@
             border-radius: 8px;
             margin-bottom: 25px;
             font-weight: bold;
-            display: none;
+            display: none; /* Hidden by default */
             text-align: center;
         }
         .message-box.success {
@@ -262,14 +260,14 @@
         .order-card .status-selector button {
             padding: 8px 15px;
             font-size: 0.9em;
-            margin-top: 0;
+            margin-top: 0; /* Override default button margin */
         }
 
         /* Shopping Cart Section */
         #shopping-cart-section {
             margin-top: 40px;
             padding: 20px;
-            background-color: #e0f2f7;
+            background-color: #e0f2f7; /* Light blue background */
             border-radius: 10px;
             box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.08);
         }
@@ -323,7 +321,7 @@
             .form-grid {
                 grid-template-columns: 1fr;
             }
-            #product-list, #order-list, #customer-list {
+            #product-list, #order-list {
                 grid-template-columns: 1fr;
             }
         }
@@ -331,52 +329,10 @@
 </head>
 <body>
     <div class="container">
-        <h1>E-commerce Application (Week 05)</h1>
-        <p style="text-align: center; color: #666;">
-            Product Microservice, Order Microservice, Customer Microservice, 
-            RabbitMQ for Async Events, Persistent Storage & Azure Uploads.
-        </p>
+        <h1>E-commerce Application (Week 07 - Example 02)</h1>
+        <p style="text-align: center; color: #666;">Product Microservice, Order Microservice, and Frontend with Persistent Storage & Azure Uploads.</p>
 
         <div id="message-box" class="message-box"></div>
-
-        <!-- Customer Management Section -->
-        <div class="section">
-            <h2>Customer Management</h2>
-
-            <h3>Add New Customer</h3>
-            <form id="customer-form" class="form-grid">
-                <div class="form-group">
-                    <label for="customer-email">Email:</label>
-                    <input type="email" id="customer-email" required>
-                </div>
-                <div class="form-group">
-                    <label for="customer-password">Password:</label>
-                    <input type="password" id="customer-password" required minlength="8">
-                </div>
-                <div class="form-group">
-                    <label for="customer-first-name">First Name:</label>
-                    <input type="text" id="customer-first-name" required>
-                </div>
-                <div class="form-group">
-                    <label for="customer-last-name">Last Name:</label>
-                    <input type="text" id="customer-last-name" required>
-                </div>
-                <div class="form-group">
-                    <label for="customer-phone">Phone Number:</label>
-                    <input type="text" id="customer-phone">
-                </div>
-                <div class="form-group full-width">
-                    <label for="customer-shipping-address">Shipping Address:</label>
-                    <textarea id="customer-shipping-address" rows="3"></textarea>
-                </div>
-                <button type="submit" class="full-width">Add Customer</button>
-            </form>
-
-            <h3>All Customers</h3>
-            <div id="customer-list">
-                <p>Loading customers...</p>
-            </div>
-        </div>
 
         <!-- Product Management Section -->
         <div class="section">
@@ -424,7 +380,7 @@
             <form id="place-order-form">
                 <h3>Place New Order</h3>
                 <div class="form-group">
-                    <label for="order-user-id">Customer ID:</label>
+                    <label for="order-user-id">User ID:</label>
                     <input type="number" id="order-user-id" value="1" min="1" required>
                 </div>
                 <div class="form-group">

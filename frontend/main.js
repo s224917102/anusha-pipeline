@@ -1,18 +1,21 @@
-// week05/frontend/main.js
+// week09/example-2/frontend/main.js
 
 document.addEventListener('DOMContentLoaded', () => {
-    // API endpoints for the Product, Order, and Customer services.
-    // These ports are mapped from the Docker containers to the host machine in docker-compose.yml.
-    const PRODUCT_API_BASE_URL = 'http://20.227.115.78:8000';
-    const ORDER_API_BASE_URL = 'http://20.227.72.210:8001';
-    const CUSTOMER_API_BASE_URL = 'http://4.237.249.22:8002';
+    // API endpoints for the Product and Order services.
+    // These ports (30000 for Product, 30001 for Order) are mapped
+    // from the Docker containers to the host machine in docker-compose.yml for Example 2.
+    const PRODUCT_API_BASE_URL = 'http://localhost:8000';
+    const ORDER_API_BASE_URL = 'http://localhost:8001';
+
+    // Product Service is named 'product-service-w04e2' and exposes port 8000 internally.
+    //const PRODUCT_API_BASE_URL = 'http://product-service-w04e2:8000';
+    // Order Service is named 'order-service-w04e2' and exposes port 8001 internally.
+    //const ORDER_API_BASE_URL = 'http://order-service-w04e2:8001';
 
     // DOM Elements
     const messageBox = document.getElementById('message-box');
     const productForm = document.getElementById('product-form');
     const productListDiv = document.getElementById('product-list');
-    const customerForm = document.getElementById('customer-form');
-    const customerListDiv = document.getElementById('customer-list');
     const cartItemsList = document.getElementById('cart-items');
     const cartTotalSpan = document.getElementById('cart-total');
     const placeOrderForm = document.getElementById('place-order-form');
@@ -45,8 +48,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Fetch and display products
     async function fetchProducts() {
         productListDiv.innerHTML = '<p>Loading products...</p>';
+        const url = `${PRODUCT_API_BASE_URL}/products/`;
+        console.log("Attempting to fetch products from URL:", url); // DEBUG LOG
         try {
-            const response = await fetch(`${PRODUCT_API_BASE_URL}/products/`);
+            const response = await fetch(url);
             if (!response.ok) {
                 const errorData = await response.json();
                 throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
@@ -66,6 +71,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const productCard = document.createElement('div');
                 productCard.className = 'product-card';
                 
+                // console.log(`Product ID: ${product.product_id}, Image URL received:`, product.image_url); // Diagnostic log from previous iteration
+
                 productCard.innerHTML = `
                     <img src="${product.image_url || 'https://placehold.co/300x200/cccccc/333333?text=No+Image'}" alt="${product.name}" onerror="this.onerror=null;this.src='https://placehold.co/300x200/cccccc/333333?text=Image+Error';" />
                     <h3>${product.name} (ID: ${product.product_id})</h3>
@@ -128,7 +135,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Handle product card actions (delete, add to cart, upload image)
+    // Handle product delete and add to cart buttons (using event delegation)
     productListDiv.addEventListener('click', async (event) => {
         // Delete Product
         if (event.target.classList.contains('delete-btn')) {
@@ -181,7 +188,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 showMessage(`Uploading image for product ${productId}...`, 'info');
                 const response = await fetch(`${PRODUCT_API_BASE_URL}/products/${productId}/upload-image`, {
                     method: 'POST',
-                    body: formData,
+                    body: formData, // No 'Content-Type' header needed for FormData; browser sets it
                 });
 
                 if (!response.ok) {
@@ -212,7 +219,7 @@ document.addEventListener('DOMContentLoaded', () => {
             cart.push({
                 product_id: productId,
                 name: productName,
-                price: productPrice,
+                price: productPrice, // price_at_purchase
                 quantity: 1
             });
         }
@@ -241,113 +248,6 @@ document.addEventListener('DOMContentLoaded', () => {
         cartTotalSpan.textContent = `Total: ${formatCurrency(totalCartAmount)}`;
     }
 
-
-    // --- Customer Service Interactions ---
-
-    // Fetch and display customers
-    async function fetchCustomers() {
-        customerListDiv.innerHTML = '<p>Loading customers...</p>';
-        try {
-            const response = await fetch(`${CUSTOMER_API_BASE_URL}/customers/`);
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
-            }
-            const customers = await response.json();
-            
-            customerListDiv.innerHTML = ''; // Clear previous content
-
-            if (customers.length === 0) {
-                customerListDiv.innerHTML = '<p>No customers available yet. Add some above!</p>';
-                return;
-            }
-
-            customers.forEach(customer => {
-                const customerCard = document.createElement('div');
-                customerCard.className = 'customer-card';
-                customerCard.innerHTML = `
-                    <h3>${customer.first_name} ${customer.last_name} (ID: ${customer.customer_id})</h3>
-                    <p>Email: ${customer.email}</p>
-                    <p>Phone: ${customer.phone_number || 'N/A'}</p>
-                    <p>Shipping Address: ${customer.shipping_address || 'N/A'}</p>
-                    <p><small>Created: ${new Date(customer.created_at).toLocaleString()}</small></p>
-                    <div class="card-actions">
-                        <button class="delete-customer-btn" data-id="${customer.customer_id}">Delete</button>
-                    </div>
-                `;
-                customerListDiv.appendChild(customerCard);
-            });
-        } catch (error) {
-            console.error('Error fetching customers:', error);
-            showMessage(`Failed to load customers: ${error.message}`, 'error');
-            customerListDiv.innerHTML = '<p>Could not load customers. Please check the Customer Service.</p>';
-        }
-    }
-
-    // Handle form submission for adding a new customer
-    customerForm.addEventListener('submit', async (event) => {
-        event.preventDefault();
-
-        const email = document.getElementById('customer-email').value;
-        const password = document.getElementById('customer-password').value;
-        const first_name = document.getElementById('customer-first-name').value;
-        const last_name = document.getElementById('customer-last-name').value;
-        const phone_number = document.getElementById('customer-phone').value;
-        const shipping_address = document.getElementById('customer-shipping-address').value;
-
-        const newCustomer = { email, password, first_name, last_name, phone_number, shipping_address };
-
-        try {
-            const response = await fetch(`${CUSTOMER_API_BASE_URL}/customers/`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(newCustomer),
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail ? JSON.stringify(errorData.detail) : `HTTP error! status: ${response.status}`);
-            }
-
-            const addedCustomer = await response.json();
-            showMessage(`Customer "${addedCustomer.email}" added successfully! ID: ${addedCustomer.customer_id}`, 'success');
-            customerForm.reset(); // Clear the form
-            fetchCustomers(); // Refresh the list of customers
-        } catch (error) {
-            console.error('Error adding customer:', error);
-            showMessage(`Error adding customer: ${error.message}`, 'error');
-        }
-    });
-
-    // Handle customer delete buttons (using event delegation)
-    customerListDiv.addEventListener('click', async (event) => {
-        if (event.target.classList.contains('delete-customer-btn')) {
-            const customerId = event.target.dataset.id;
-            if (!confirm(`Are you sure you want to delete customer ID: ${customerId}?`)) {
-                return;
-            }
-            try {
-                const response = await fetch(`${CUSTOMER_API_BASE_URL}/customers/${customerId}`, {
-                    method: 'DELETE',
-                });
-
-                if (response.status === 204) {
-                    showMessage(`Customer ID: ${customerId} deleted successfully.`, 'success');
-                    fetchCustomers(); // Refresh the list
-                } else {
-                    const errorData = await response.json();
-                    throw new Error(errorData.detail ? JSON.stringify(errorData.detail) : `HTTP error! status: ${response.status}`);
-                }
-            } catch (error) {
-                console.error('Error deleting customer:', error);
-                showMessage(`Error deleting customer: ${error.message}`, 'error');
-            }
-        }
-    });
-
-
     // --- Order Service Interactions ---
 
     // Handle form submission for placing a new order
@@ -364,9 +264,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Map cart items to OrderItemCreate schema
         const orderItems = cart.map(item => ({
-            product_id: parseInt(item.product_id, 10),
+            product_id: parseInt(item.product_id, 10), // Ensure product_id is int
             quantity: item.quantity,
-            price_at_purchase: item.price
+            price_at_purchase: item.price // price_at_purchase is float
         }));
 
         const newOrder = {
@@ -376,9 +276,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         try {
-            // Order service will now create order with 'pending' status
-            // and publish an event for stock deduction.
-            showMessage("Placing order... (status will update asynchronously)", 'info');
+            showMessage("Placing order...", 'info');
             const response = await fetch(`${ORDER_API_BASE_URL}/orders/`, {
                 method: 'POST',
                 headers: {
@@ -393,13 +291,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const placedOrder = await response.json();
-            showMessage(`Order ${placedOrder.order_id} created with initial status: ${placedOrder.status}. Stock deduction pending.`, 'success');
+            showMessage(`Order ${placedOrder.order_id} placed successfully! Total: ${formatCurrency(placedOrder.total_amount)}`, 'success');
             
-            cart = []; // Clear cart after successful order placement
+            cart = []; // Clear cart after successful order
             updateCartDisplay();
             placeOrderForm.reset(); // Clear form
-            fetchOrders(); // Refresh order list to show the new 'pending' order
-            // No longer fetching products here directly, as stock update is asynchronous
+            fetchOrders(); // Refresh order list
+            fetchProducts(); // Also refresh product list to show updated stock
         } catch (error) {
             console.error('Error placing order:', error);
             showMessage(`Error placing order: ${error.message}`, 'error');
@@ -452,7 +350,6 @@ document.addEventListener('DOMContentLoaded', () => {
                             <option value="processing" ${order.status === 'processing' ? 'selected' : ''}>Processing</option>
                             <option value="shipped" ${order.status === 'shipped' ? 'selected' : ''}>Shipped</option>
                             <option value="confirmed" ${order.status === 'confirmed' ? 'selected' : ''}>Confirmed</option>
-                            <option value="failed" ${order.status === 'failed' ? 'selected' : ''}>Failed</option> <!-- NEW: Failed Status -->
                             <option value="cancelled" ${order.status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
                             <option value="completed" ${order.status === 'completed' ? 'selected' : ''}>Completed</option>
                         </select>
@@ -481,12 +378,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             try {
                 showMessage(`Updating status for order ${orderId} to "${newStatus}"...`, 'info');
-                const response = await fetch(`${ORDER_API_BASE_URL}/orders/${orderId}/status`, { // PATCH request now uses body
+                const response = await fetch(`${ORDER_API_BASE_URL}/orders/${orderId}/status?new_status=${newStatus}`, {
                     method: 'PATCH',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ status: newStatus }), // Send status in body
                 });
 
                 if (!response.ok) {
@@ -531,12 +424,5 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial data fetch on page load
     fetchProducts();
-    fetchCustomers(); // NEW: Fetch customers on load
     fetchOrders();
-
-    // Set up a periodic refresh for orders (e.g., every 10 seconds)
-    // This helps show asynchronous status updates from RabbitMQ in real-time
-    setInterval(fetchOrders, 10000); // Refresh orders every 10 seconds
-    setInterval(fetchProducts, 15000); // Refresh products every 15 seconds to see stock changes
-
 });

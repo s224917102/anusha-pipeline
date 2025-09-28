@@ -1,4 +1,4 @@
-# week05/backend/product_service/app/models.py
+# week09/example-2/backend/product_service/app/models.py
 
 from sqlalchemy import Column, DateTime, Integer, Numeric, String, Text
 from sqlalchemy.sql import func
@@ -7,7 +7,8 @@ from .db import Base
 
 
 class Product(Base):
-    __tablename__ = "products_week05"
+    # Name of the database table
+    __tablename__ = "products_week09_example_02"
     product_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String(255), nullable=False, index=True)
     description = Column(Text, nullable=True)

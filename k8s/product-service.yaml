@@ -1,9 +1,9 @@
-# week05/k8s/product-service.yaml
+# week09/example-3/k8s/product-service.yaml
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: product-service-w05-aks
+  name: product-service-w09-aks
   labels:
     app: product-service
 spec:
@@ -15,71 +15,60 @@ spec:
     metadata:
       labels:
         app: product-service
+      annotations:
+        prometheus.io/scrape: 'true' # Instruct Prometheus to scrape this pod
+        prometheus.io/path: '/metrics' # The path where metrics are exposed
+        prometheus.io/port: '8000' # The port where metrics are exposed on the container
     spec:
       containers:
       - name: product-service-container
-        image: durgeshsamariya.azurecr.io/week05ex01pr:v1
+        image: docker.io/s224917102/product_service:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
         env:
         - name: POSTGRES_HOST
-          value: product-db-service-w05-aks
+          value: product-db-service-w09-aks
         - name: POSTGRES_DB
           valueFrom:
             configMapKeyRef:
-              name: ecomm-config-w05-aks
+              name: ecomm-config-w09-aks
               key: PRODUCTS_DB_NAME
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
-              name: ecomm-secrets-w05-aks
+              name: ecomm-secrets-w09-aks
               key: POSTGRES_USER
         - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: ecomm-secrets-w05-aks
+              name: ecomm-secrets-w09-aks
               key: POSTGRES_PASSWORD
         - name: AZURE_STORAGE_ACCOUNT_NAME
           valueFrom:
             secretKeyRef:
-              name: ecomm-secrets-w05-aks
+              name: ecomm-secrets-w09-aks
               key: AZURE_STORAGE_ACCOUNT_NAME
         - name: AZURE_STORAGE_ACCOUNT_KEY
           valueFrom:
             secretKeyRef:
-              name: ecomm-secrets-w05-aks
+              name: ecomm-secrets-w09-aks
               key: AZURE_STORAGE_ACCOUNT_KEY
         - name: AZURE_STORAGE_CONTAINER_NAME
           valueFrom:
             configMapKeyRef:
-              name: ecomm-config-w05-aks
+              name: ecomm-config-w09-aks
               key: AZURE_STORAGE_CONTAINER_NAME
         - name: AZURE_SAS_TOKEN_EXPIRY_HOURS
           valueFrom:
             configMapKeyRef:
-              name: ecomm-config-w05-aks
+              name: ecomm-config-w09-aks
               key: AZURE_SAS_TOKEN_EXPIRY_HOURS
-        - name: RABBITMQ_HOST
-          valueFrom:
-            configMapKeyRef:
-              name: ecomm-config-w05-aks
-              key: RABBITMQ_HOST
-        - name: RABBITMQ_USER
-          valueFrom:
-            secretKeyRef:
-              name: ecomm-secrets-w05-aks
-              key: RABBITMQ_USER
-        - name: RABBITMQ_PASS
-          valueFrom:
-            secretKeyRef:
-              name: ecomm-secrets-w05-aks
-              key: RABBITMQ_PASS
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: product-service-w05-aks
+  name: product-service-w09-aks
   labels:
     app: product-service
 spec:

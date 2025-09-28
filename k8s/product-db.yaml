@@ -1,9 +1,9 @@
-# week05/k8s/product-db.yaml
+# week07/example-3/k8s/product-db.yaml
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: product-db-deployment-w05-aks
+  name: product-db-deployment-w09-aks
   labels:
     app: product-db
 spec:
@@ -25,30 +25,30 @@ spec:
         - name: POSTGRES_DB
           valueFrom:
             configMapKeyRef:
-              name: ecomm-config-w05-aks
+              name: ecomm-config-w09-aks
               key: PRODUCTS_DB_NAME
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
-              name: ecomm-secrets-w05-aks
+              name: ecomm-secrets-w09-aks
               key: POSTGRES_USER
         - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: ecomm-secrets-w05-aks
+              name: ecomm-secrets-w09-aks
               key: POSTGRES_PASSWORD
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: product-db-service-w05-aks
+  name: product-db-service-w09-aks # Internal DNS name for the Product DB within the cluster
   labels:
     app: product-db
 spec:
   selector:
-    app: product-db
+    app: product-db # Selects pods with the label app: product-db
   ports:
     - protocol: TCP
-      port: 5432
-      targetPort: 5432
-  type: ClusterIP
+      port: 5432 # The port the service listens on (default PostgreSQL)
+      targetPort: 5432 # The port on the Pod (containerPort)
+  type: ClusterIP # Only accessible from within the cluster, as it's an internal DB

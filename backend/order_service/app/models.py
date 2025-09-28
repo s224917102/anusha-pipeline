@@ -1,4 +1,4 @@
-# week05/backend/order_service/app/models.py
+# week09/example-2/backend/order_service/app/models.py
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import relationship
@@ -8,7 +8,7 @@ from .db import Base
 
 
 class Order(Base):
-    __tablename__ = "orders_week05"
+    __tablename__ = "orders_week09_example_02"
 
     order_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(Integer, nullable=False, index=True)
@@ -31,14 +31,14 @@ class Order(Base):
 
 
 class OrderItem(Base):
-    __tablename__ = "order_items_week05"
+    __tablename__ = "order_items_week09_example_02"
 
     order_item_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
 
     # Foreign key to the 'orders' table
     order_id = Column(
         Integer,
-        ForeignKey("orders_week05.order_id"),
+        ForeignKey("orders_week09_example_02.order_id"),
         nullable=False,
         index=True,
     )
@@ -50,7 +50,6 @@ class OrderItem(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    # Define a relationship back to Order
     order = relationship("Order", back_populates="items")
 
     def __repr__(self):

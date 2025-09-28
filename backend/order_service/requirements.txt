@@ -3,5 +3,5 @@ uvicorn
 sqlalchemy
 psycopg2-binary
 pydantic
-aio-pika
 httpx
+prometheus_client

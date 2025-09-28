@@ -1,4 +1,4 @@
-# week05/backend/order_service/tests/test_main.py
+# week07/example-2/backend/order_service/tests/test_main.py
 
 import logging
 import time
@@ -6,10 +6,10 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
 from app.db import SessionLocal, engine, get_db
 from app.main import PRODUCT_SERVICE_URL, app
 from app.models import Base, Order, OrderItem
-
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
@@ -19,10 +19,9 @@ logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 logging.getLogger("fastapi").setLevel(logging.WARNING)
-logging.getLogger("app.main").setLevel(logging.WARNING)
+logging.getLogger("app.main").setLevel(logging.WARNING)  # Suppress app's own info logs
 
 
-# --- Pytest Fixtures ---
 @pytest.fixture(scope="session", autouse=True)
 def setup_database_for_tests():
     max_retries = 10
@@ -98,7 +97,6 @@ def mock_httpx_client():
         yield mock_client_instance
 
 
-# --- Order Service Tests ---
 def test_read_root(client: TestClient):
     """Test the root endpoint."""
     response = client.get("/")
