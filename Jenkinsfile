@@ -82,126 +82,117 @@ pipeline {
       options { timeout(time: 25, unit: 'MINUTES') }
       steps {
         sh '''#!/usr/bin/env bash
-set -euo pipefail
+          set -euo pipefail
 
-export PIP_CACHE_DIR="$WORKSPACE/.pip-cache"
-mkdir -p "$PIP_CACHE_DIR"
+          # ---------- helpers ----------
+          make_venv () {
+            vdir="$1"; shift
+            python3 -m venv "$vdir"
+            . "$vdir/bin/activate"
+            python -m pip install -U pip wheel >/dev/null
+            # install all given pkgs verbatim (quoted by caller when needed)
+            python -m pip install "$@" >/dev/null
+            deactivate
+          }
 
-hash_req () {
-python3 - <<'PY'
-import hashlib,sys,os
-data=b""
-for p in sys.argv[1:]:
-    if p and os.path.exists(p):
-        data+=open(p,'rb').read()
-print(hashlib.sha256(data).hexdigest()[:12] if data else "none")
-PY
-}
+          wait_db () {
+            name="$1"
+            for i in $(seq 1 30); do
+              if docker exec "$name" pg_isready -U postgres >/dev/null 2>&1; then
+                echo " - $name ready"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "ERROR: $name not ready after 60s"
+            docker logs "$name" || true
+            return 1
+          }
 
-PROD_KEY=$(hash_req ${PRODUCT_DIR}/requirements.txt ${PRODUCT_DIR}/requirements-dev.txt)
-ORDER_KEY=$(hash_req ${ORDER_DIR}/requirements.txt ${ORDER_DIR}/requirements-dev.txt)
-INT_KEY="int-$(python3 - <<'PY'
-import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")
-PY
-)"
+          # ---------- unit: spin up DBs ----------
+          echo "[TEST][UNIT] Clean old DBs"
+          docker rm -f product_db order_db >/dev/null 2>&1 || true
 
-make_venv () {
-  NAME="$1"; shift
-  if [ ! -d "$NAME" ]; then
-    python3 -m venv "$NAME"
-    . "$NAME/bin/activate"
-    python -m pip install -U pip wheel >/dev/null
-    [ $# -gt 0 ] && python -m pip install "$@" >/dev/null
-    deactivate
-  fi
-}
+          echo "[TEST][UNIT] Start Postgres"
+          docker run -d --name product_db -p 5432:5432 \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=products \
+            postgres:15
+          docker run -d --name order_db -p 5433:5432 \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orders \
+            postgres:15
 
-echo "[TEST][UNIT] Clean old DBs"
-docker rm -f product_db order_db >/dev/null 2>&1 || true
+          echo "[TEST][UNIT] Wait for DBs"
+          wait_db product_db
+          wait_db order_db
 
-echo "[TEST][UNIT] Start Postgres"
-docker run -d --name product_db -p 5432:5432 \
-  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=products \
-  postgres:15
-docker run -d --name order_db   -p 5433:5432 \
-  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orders \
-  postgres:15
+          # ---------- unit: product_service ----------
+          echo "[TEST][UNIT] Product"
+          if [ -d ${PRODUCT_DIR} ]; then
+            make_venv ".venv_prod" "pytest>=8,<9" "pytest-timeout==2.3.1"
+            . .venv_prod/bin/activate
+            # install runtime + dev deps (use -r for files)
+            [ -f ${PRODUCT_DIR}/requirements.txt ] && python -m pip install -r ${PRODUCT_DIR}/requirements.txt >/dev/null || true
+            [ -f ${PRODUCT_DIR}/requirements-dev.txt ] && python -m pip install -r ${PRODUCT_DIR}/requirements-dev.txt >/dev/null || true
 
-echo "[TEST][UNIT] Wait for DBs"
-for name in product_db order_db; do
-  for i in $(seq 1 30); do
-    if docker exec "$name" pg_isready -U postgres >/dev/null 2>&1; then
-      echo " - $name ready"
-      break
-    fi
-    sleep 2
-    if [ "$i" -eq 30 ]; then
-      echo "ERROR: $name not ready after ~60s"
-      docker logs "$name" || true
-      exit 1
-    fi
-  done
-done
+            export POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DB=products POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
+            # avoid random plugin autoload; then explicitly load timeout
+            export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+            pytest -q -p pytest_timeout ${PRODUCT_DIR}/tests --junitxml=product_unit.xml --timeout=60 --timeout-method=thread
+            deactivate
+          fi
 
-# Avoid host auto-plugins that cause conflicts
-export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+          # ---------- unit: order_service ----------
+          echo "[TEST][UNIT] Order"
+          if [ -d ${ORDER_DIR} ]; then
+            make_venv ".venv_order" "pytest>=8,<9" "pytest-timeout==2.3.1"
+            . .venv_order/bin/activate
+            [ -f ${ORDER_DIR}/requirements.txt ] && python -m pip install -r ${ORDER_DIR}/requirements.txt >/dev/null || true
+            [ -f ${ORDER_DIR}/requirements-dev.txt ] && python -m pip install -r ${ORDER_DIR}/requirements-dev.txt >/dev/null || true
 
-# -------- product unit tests --------
-echo "[TEST][UNIT] Product"
-PROD_REQ_ARGS=( -r "${PRODUCT_DIR}/requirements.txt" )
-[ -f "${PRODUCT_DIR}/requirements-dev.txt" ] && PROD_REQ_ARGS+=( -r "${PRODUCT_DIR}/requirements-dev.txt" )
-make_venv ".venv_prod_${PROD_KEY}" "${PROD_REQ_ARGS[@]}" "pytest>=8,<9" "pytest-timeout==2.3.1"
-. ".venv_prod_${PROD_KEY}/bin/activate"
-export POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DB=products POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
-pytest -q -p pytest_timeout ${PRODUCT_DIR}/tests --junitxml=product_unit.xml --timeout=60 --timeout-method=thread
-deactivate
+            export POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_DB=orders POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
+            export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+            pytest -q -p pytest_timeout ${ORDER_DIR}/tests --junitxml=order_unit.xml --timeout=60 --timeout-method=thread
+            deactivate
+          fi
 
-# -------- order unit tests --------
-echo "[TEST][UNIT] Order"
-ORDER_REQ_ARGS=( -r "${ORDER_DIR}/requirements.txt" )
-[ -f "${ORDER_DIR}/requirements-dev.txt" ] && ORDER_REQ_ARGS+=( -r "${ORDER_DIR}/requirements-dev.txt" )
-make_venv ".venv_order_${ORDER_KEY}" "${ORDER_REQ_ARGS[@]}" "pytest>=8,<9" "pytest-timeout==2.3.1"
-. ".venv_order_${ORDER_KEY}/bin/activate"
-export POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_DB=orders POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
-pytest -q -p pytest_timeout ${ORDER_DIR}/tests --junitxml=order_unit.xml --timeout=60 --timeout-method=thread
-deactivate
+          echo "[TEST][UNIT] Stop DB containers"
+          docker rm -f product_db order_db >/dev/null 2>&1 || true
 
-echo "[TEST][UNIT] Stop DBs"
-docker rm -f product_db order_db >/dev/null 2>&1 || true
+          # ---------- integration ----------
+          echo "[TEST][INT] Compose up (if tests/integration exists)"
+          if [ -d tests/integration ]; then
+            (docker compose up -d --remove-orphans || docker-compose up -d --remove-orphans)
 
-# -------- integration tests --------
-if [ -d tests/integration ]; then
-  echo "[TEST][INT] docker compose up"
-  (docker compose up -d --remove-orphans || docker-compose up -d --remove-orphans)
+            wait_http () { url="$1"; max="$2"; i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $max ] && return 1; sleep 1; done; }
 
-  wait_http () { url="$1"; max="$2"; i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $max ] && return 1; sleep 1; done; }
-  if ! wait_http "http://localhost:8000/health" 60; then
-    echo "[INT] product_service not ready in 60s"
-    (docker compose logs product_service || docker-compose logs product_service) | tail -200 || true
-    (docker compose down -v || docker-compose down -v) || true
-    exit 1
-  fi
-  if ! wait_http "http://localhost:8001/health" 60; then
-    echo "[INT] order_service not ready in 60s"
-    (docker compose logs order_service || docker-compose logs order_service) | tail -200 || true
-    (docker compose down -v || docker-compose down -v) || true
-    exit 1
-  fi
+            if ! wait_http "http://localhost:8000/health" 90; then
+              echo "[TEST][INT] product_service not ready in time"
+              (docker compose logs product_service || docker-compose logs product_service) | tail -200 || true
+              (docker compose down -v || docker-compose down -v) || true
+              exit 1
+            fi
+            if ! wait_http "http://localhost:8001/health" 90; then
+              echo "[TEST][INT] order_service not ready in time"
+              (docker compose logs order_service || docker-compose logs order_service) | tail -200 || true
+              (docker compose down -v || docker-compose down -v) || true
+              exit 1
+            fi
 
-  echo "[TEST][INT] venv & run"
-  make_venv ".venv_int_${INT_KEY}" pytest\>=8,\<9 pytest-timeout==2.3.1 requests
-  . ".venv_int_${INT_KEY}/bin/activate"
-  export PRODUCT_BASE=${PRODUCT_BASE:-http://localhost:8000}
-  export ORDER_BASE=${ORDER_BASE:-http://localhost:8001}
-  pytest -q -p pytest_timeout tests/integration --junitxml=integration.xml --timeout=90 --timeout-method=thread
-  deactivate
+            INT_KEY=$(date +%s)
+            make_venv ".venv_int_${INT_KEY}" "pytest>=8,<9" "pytest-timeout==2.3.1" requests
+            . ".venv_int_${INT_KEY}/bin/activate"
+            export PRODUCT_BASE=${PRODUCT_BASE:-http://localhost:8000}
+            export ORDER_BASE=${ORDER_BASE:-http://localhost:8001}
+            export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+            pytest -q -p pytest_timeout tests/integration --junitxml=integration.xml --timeout=90 --timeout-method=thread
+            deactivate
 
-  echo "[TEST][INT] down"
-  (docker compose down -v || docker-compose down -v)
-else
-  echo "[TEST][INT] No tests/integration — skipping"
-fi
-'''
+            echo "[TEST][INT] Compose down"
+            (docker compose down -v || docker-compose down -v)
+          else
+            echo "[TEST][INT] No tests/integration — skipping"
+          fi
+        '''
       }
       post {
         always {
@@ -224,7 +215,7 @@ fi
                 -Dsonar.projectVersion=${IMAGE_TAG} \
                 -Dsonar.sources=${SONAR_SOURCES} \
                 -Dsonar.python.version=3.10 \
-                -Dsonar.exclusions=**/.git/**,**/__pycache__/**,**/.venv*/**,**/*.png,**/*.jpg,**/*.svg \
+                -Dsonar.exclusions=**/.git/**,**/__pycache__/**,**/.venv/**,**/*.png,**/*.jpg,**/*.svg \
                 -Dsonar.tests=${PRODUCT_DIR}/tests,${ORDER_DIR}/tests \
                 -Dsonar.test.inclusions=**/tests/**
             '''
