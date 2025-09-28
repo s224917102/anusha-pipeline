@@ -10,38 +10,44 @@ pipeline {
   environment {
     PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+    // ---------- Docker / Registry ----------
     DOCKERHUB_NS    = 's224917102'
     DOCKERHUB_CREDS = 'dockerhub-s224917102'
     REGISTRY        = 'docker.io'
+    // Build everything as amd64 on Apple Silicon hosts
+    DOCKER_DEFAULT_PLATFORM = 'linux/amd64'
 
-    PRODUCT_IMG     = "${REGISTRY}/${DOCKERHUB_NS}/product_service"
-    ORDER_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
-    FRONTEND_IMG    = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
+    PRODUCT_IMG   = "${REGISTRY}/${DOCKERHUB_NS}/product_service"
+    ORDER_IMG     = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
+    FRONTEND_IMG  = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
 
-    // Local tags we control in this pipeline
+    // Local names produced by `docker build`/`docker compose build`
     LOCAL_IMG_PRODUCT  = 'week09_example02_product_service:latest'
     LOCAL_IMG_ORDER    = 'week09_example02_order_service:latest'
     LOCAL_IMG_FRONTEND = 'week09_example02_frontend:latest'
 
+    // ---------- K8s ----------
     KUBE_CONTEXT  = 'docker-desktop'
     NAMESPACE     = 'default'
     K8S_DIR       = 'k8s'
 
-    SONARQUBE = 'SonarQube'
+    // ---------- Sonar ----------
+    SONARQUBE          = 'SonarQube'
     SONAR_PROJECT_KEY  = 's224917102_DevOpsPipeline'
     SONAR_PROJECT_NAME = 'DevOpsPipeline'
     SONAR_SOURCES      = '.'
 
+    // ---------- Paths ----------
     PRODUCT_DIR  = 'backend/product_service'
     ORDER_DIR    = 'backend/order_service'
     FRONTEND_DIR = 'frontend'
 
+    // ---------- Tools ----------
     TRIVY_VER    = '0.55.0'
   }
 
   stages {
-
-    /* ========================= BUILD (amd64) ========================= */
+    /* ========================= BUILD ========================= */
     stage('Build') {
       steps {
         checkout scm
@@ -53,29 +59,31 @@ pipeline {
         }
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          export DOCKER_DEFAULT_PLATFORM=linux/amd64
+          export DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM}"
           export DOCKER_BUILDKIT=1
 
           echo "[BUILD] docker=$(command -v docker || true)"
           echo "[BUILD] docker compose=$(docker compose version | head -1 || docker-compose version | head -1 || true)"
-          echo "[BUILD] DOCKER_DEFAULT_PLATFORM=$DOCKER_DEFAULT_PLATFORM"
+          echo "[BUILD] platform=${DOCKER_DEFAULT_PLATFORM}"
 
-          # If your repo has compose build contexts, this will build all of them as amd64
-          echo "[BUILD] docker compose build --no-cache (best-effort)"
-          (docker compose build --no-cache || docker-compose build --no-cache || true)
+          # Build via compose to ensure dev parity (no cache, amd64)
+          if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
+            echo "[BUILD] Compose build (amd64, --no-cache)"
+            DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM}" docker compose build --no-cache
+          fi
 
           echo "[BUILD] Build explicit images as amd64 (authoritative)"
-          docker build --pull --platform=linux/amd64 \
+          docker build --pull --platform="${DOCKER_DEFAULT_PLATFORM}" \
             --label org.opencontainers.image.revision="${GIT_SHA}" \
             --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
             -t ${LOCAL_IMG_PRODUCT} ${PRODUCT_DIR}
 
-          docker build --pull --platform=linux/amd64 \
+          docker build --pull --platform="${DOCKER_DEFAULT_PLATFORM}" \
             --label org.opencontainers.image.revision="${GIT_SHA}" \
             --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
             -t ${LOCAL_IMG_ORDER}   ${ORDER_DIR}
 
-          docker build --pull --platform=linux/amd64 \
+          docker build --pull --platform="${DOCKER_DEFAULT_PLATFORM}" \
             --label org.opencontainers.image.revision="${GIT_SHA}" \
             --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
             -t ${LOCAL_IMG_FRONTEND} ${FRONTEND_DIR}
@@ -83,21 +91,25 @@ pipeline {
           echo "[BUILD] Tag images for registry"
           docker tag ${LOCAL_IMG_PRODUCT}  ${PRODUCT_IMG}:${IMAGE_TAG}
           docker tag ${LOCAL_IMG_PRODUCT}  ${PRODUCT_IMG}:latest
+
           docker tag ${LOCAL_IMG_ORDER}    ${ORDER_IMG}:${IMAGE_TAG}
           docker tag ${LOCAL_IMG_ORDER}    ${ORDER_IMG}:latest
+
           docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:${IMAGE_TAG}
           docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:latest
+
+          echo "[BUILD] Done."
         '''
       }
     }
-    /* ================================================================ */
 
+    /* ========================= TEST ========================= */
     stage('Test') {
       options { timeout(time: 25, unit: 'MINUTES') }
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          export DOCKER_DEFAULT_PLATFORM=linux/amd64
+          export DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM}"
 
           make_venv () {
             vdir="$1"; shift
@@ -122,14 +134,21 @@ pipeline {
             return 1
           }
 
+          echo "[TEST] Free ports if busy"
+          for P in 5432 5433 55432 55433; do
+            CID="$(docker ps -q --filter "publish=$P")"
+            [ -n "$CID" ] && docker stop "$CID" >/dev/null || true
+          done
+
           echo "[TEST][UNIT] Clean old DBs"
           docker rm -f product_db order_db >/dev/null 2>&1 || true
 
-          echo "[TEST][UNIT] Start Postgres (amd64 image for consistency)"
-          docker run -d --name product_db -p 5432:5432 --platform=linux/amd64 \
+          echo "[TEST][UNIT] Start Postgres (amd64) on high ports to avoid clashes"
+          docker run -d --name product_db -p 55432:5432 --platform="${DOCKER_DEFAULT_PLATFORM}" \
             -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=products \
             postgres:15
-          docker run -d --name order_db -p 5433:5432 --platform=linux/amd64 \
+
+          docker run -d --name order_db -p 55433:5432 --platform="${DOCKER_DEFAULT_PLATFORM}" \
             -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orders \
             postgres:15
 
@@ -143,7 +162,7 @@ pipeline {
             . .venv_prod/bin/activate
             [ -f ${PRODUCT_DIR}/requirements.txt ] && python -m pip install -r ${PRODUCT_DIR}/requirements.txt >/dev/null || true
             [ -f ${PRODUCT_DIR}/requirements-dev.txt ] && python -m pip install -r ${PRODUCT_DIR}/requirements-dev.txt >/dev/null || true
-            export POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DB=products POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
+            export POSTGRES_HOST=localhost POSTGRES_PORT=55432 POSTGRES_DB=products POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
             export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
             pytest -q -p pytest_timeout ${PRODUCT_DIR}/tests --junitxml=product_unit.xml --timeout=60 --timeout-method=thread
             deactivate
@@ -155,7 +174,7 @@ pipeline {
             . .venv_order/bin/activate
             [ -f ${ORDER_DIR}/requirements.txt ] && python -m pip install -r ${ORDER_DIR}/requirements.txt >/dev/null || true
             [ -f ${ORDER_DIR}/requirements-dev.txt ] && python -m pip install -r ${ORDER_DIR}/requirements-dev.txt >/dev/null || true
-            export POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_DB=orders POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
+            export POSTGRES_HOST=localhost POSTGRES_PORT=55433 POSTGRES_DB=orders POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
             export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
             pytest -q -p pytest_timeout ${ORDER_DIR}/tests --junitxml=order_unit.xml --timeout=60 --timeout-method=thread
             deactivate
@@ -164,13 +183,13 @@ pipeline {
           echo "[TEST][UNIT] Stop DB containers"
           docker rm -f product_db order_db >/dev/null 2>&1 || true
 
-          echo "[TEST][INT] Compose up (if tests/integration exists)"
-          if [ -d tests/integration ] || [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
-            export DOCKER_DEFAULT_PLATFORM=linux/amd64
-            (docker compose up -d --remove-orphans || docker-compose up -d --remove-orphans)
-            wait_http () { url="$1"; max="${2:-120}"; i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $max ] && return 1; sleep 1; done; }
-            wait_http "http://localhost:8000/health" 120 || wait_http "http://localhost:8000/" 60
-            wait_http "http://localhost:8001/health" 120 || wait_http "http://localhost:8001/" 60
+          echo "[TEST][INT] Compose up (if tests/integration exists) as amd64"
+          if [ -d tests/integration ]; then
+            DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM}" (docker compose up -d --remove-orphans || docker-compose up -d --remove-orphans)
+
+            wait_http () { url="$1"; max="${2:-90}"; i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $max ] && return 1; sleep 1; done; }
+            wait_http "http://localhost:8000/health" 90
+            wait_http "http://localhost:8001/health" 90
 
             INT_KEY=$(date +%s)
             make_venv ".venv_int_${INT_KEY}" "pytest>=8,<9" "pytest-timeout==2.3.1" requests
@@ -178,9 +197,9 @@ pipeline {
             export PRODUCT_BASE=${PRODUCT_BASE:-http://localhost:8000}
             export ORDER_BASE=${ORDER_BASE:-http://localhost:8001}
             export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-            pytest -q -p pytest_timeout tests/integration --junitxml=integration.xml --timeout=120 --timeout-method=thread
+            pytest -q -p pytest_timeout tests/integration --junitxml=integration.xml --timeout=90 --timeout-method=thread
             deactivate
-            (docker compose down -v || docker-compose down -v)
+            DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM}" (docker compose down -v || docker-compose down -v)
           else
             echo "[TEST][INT] No tests/integration — skipping"
           fi
@@ -194,13 +213,14 @@ pipeline {
       }
     }
 
+    /* ========================= CODE QUALITY ========================= */
     stage('Code Quality') {
       steps {
         withSonarQubeEnv("${SONARQUBE}") {
           withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
             sh '''#!/usr/bin/env bash
               set -euo pipefail
-              echo "[QUALITY] Sonar analysis via Dockerized scanner"
+              echo "[QUALITY] Sonar analysis via Dockerized scanner (bundled Java)"
               if [ ! -f "sonar-project.properties" ]; then
                 echo "[QUALITY][ERROR] sonar-project.properties not found at repo root."
                 exit 1
@@ -220,6 +240,7 @@ pipeline {
       }
     }
 
+    /* ========================= SECURITY ========================= */
     stage('Security') {
       steps {
         sh '''#!/usr/bin/env bash
@@ -227,7 +248,7 @@ pipeline {
           mkdir -p security-reports .trivycache
           TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
 
-          echo "[SECURITY] FS scan (advisory)"
+          echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
           docker run --rm \
             -v "$PWD":/src -w /src \
             -v "$PWD/.trivycache":/root/.cache/ \
@@ -242,12 +263,9 @@ pipeline {
               --format sarif --output security-reports/trivy-fs.sarif \
               --no-progress /src || true
 
-          echo "[SECURITY] Image scans (HIGH/CRITICAL → fail)"
-          for IMG in \
-            "${PRODUCT_IMG}:${IMAGE_TAG}" \
-            "${ORDER_IMG}:${IMAGE_TAG}" \
-            "${FRONTEND_IMG}:${IMAGE_TAG}"
-          do
+          echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL) against local tags"
+          IMAGES="${PRODUCT_IMG}:${IMAGE_TAG} ${ORDER_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${IMAGE_TAG}"
+          for IMG in $IMAGES; do
             echo " - scanning $IMG"
             docker run --rm \
               -v "$PWD/.trivycache":/root/.cache/ \
@@ -262,42 +280,44 @@ pipeline {
       }
     }
 
+    /* ========================= DEPLOY (docker-compose staging) ========================= */
     stage('Deploy') {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          export DOCKER_DEFAULT_PLATFORM=linux/amd64
+          export DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM}"
 
           compose () {
             if docker compose version >/dev/null 2>&1; then docker compose "$@"; else docker-compose "$@"; fi
           }
 
           wait_http () {
-            url="$1"; tries="${2:-120}"
+            url="$1"; tries="${2:-90}"
             i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $tries ] && return 1; sleep 1; done
           }
 
-          echo "[DEPLOY] Staging with docker-compose (amd64 runtime)"
+          echo "[DEPLOY] Staging with docker-compose (amd64, no rebuilds)"
           if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
-            compose up -d --remove-orphans
+            DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM}" compose up -d --remove-orphans
             compose ps || true
 
             echo "[DEPLOY] Health checks"
-            if ! wait_http "http://localhost:8000/health" 120; then wait_http "http://localhost:8000/" 60 || FAIL_PRODUCT=1; fi
-            if ! wait_http "http://localhost:8001/health" 120; then wait_http "http://localhost:8001/" 60 || FAIL_ORDER=1; fi
-            wait_http "http://localhost:3001/" 120 || FAIL_FRONTEND=1
-            wait_http "http://localhost:9090/" 120 || FAIL_PROM=1
-            wait_http "http://localhost:3000/" 120 || FAIL_GRAF=1
+            if ! wait_http "http://localhost:8000/health" 90; then wait_http "http://localhost:8000/" 30 || FAIL_PRODUCT=1; fi
+            if ! wait_http "http://localhost:8001/health" 90; then wait_http "http://localhost:8001/" 30 || FAIL_ORDER=1; fi
+            wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
+            wait_http "http://localhost:9090/" 90 || FAIL_PROM=1
+            wait_http "http://localhost:3000/" 90 || FAIL_GRAF=1
 
             if [ "${FAIL_PRODUCT:-0}" -ne 0 ] || [ "${FAIL_ORDER:-0}" -ne 0 ] || \
                [ "${FAIL_FRONTEND:-0}" -ne 0 ] || [ "${FAIL_PROM:-0}" -ne 0 ] || \
                [ "${FAIL_GRAF:-0}" -ne 0 ]; then
-              echo "[DEPLOY][ERROR] Staging health checks failed."
-              compose logs --no-color > reports/compose-failed.log || true
+              echo "[DEPLOY][ERROR] Staging health checks failed. Attempting rollback to :latest."
+              mkdir -p reports && compose logs --no-color > reports/compose-failed.log || true
+              COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM}" compose up -d || true
               exit 1
             fi
 
-            echo "[DEPLOY] Staging healthy."
+            echo "[DEPLOY] Staging environment is healthy."
           else
             echo "[DEPLOY][WARN] No docker-compose file present. Skipping staging deploy."
           fi
@@ -305,6 +325,7 @@ pipeline {
       }
     }
 
+    /* ========================= RELEASE (push + local K8s) ========================= */
     stage('Release') {
       steps {
         withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
@@ -320,7 +341,7 @@ pipeline {
               docker push $img:${RELEASE_TAG}
             done
 
-            echo "[RELEASE] Apply K8s and rollouts"
+            echo "[RELEASE] Deploy to local Kubernetes (${KUBE_CONTEXT})"
             kubectl config use-context ${KUBE_CONTEXT}
             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
@@ -335,17 +356,25 @@ pipeline {
               container="$(kubectl get deploy "$dep" -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].name}')"
               echo "[RELEASE] set image deploy/${dep} ${container}=${new_ref}"
               kubectl set image deploy/"$dep" "${container}=${new_ref}" -n ${NAMESPACE}
-              kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=180s
+              if ! kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=180s; then
+                echo "[RELEASE][ERROR] Rollout failed for ${dep}. Rolling back…"
+                kubectl rollout undo deploy/"$dep" -n ${NAMESPACE} || true
+                kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=120s || true
+                exit 1
+              fi
             }
 
             update_img product-service ${PRODUCT_IMG}:${IMAGE_TAG}
             update_img order-service   ${ORDER_IMG}:${IMAGE_TAG}
             update_img frontend        ${FRONTEND_IMG}:${IMAGE_TAG}
+
+            echo "[RELEASE] Kubernetes release complete."
           '''
         }
       }
     }
 
+    /* ========================= MONITORING ========================= */
     stage('Monitoring') {
       steps {
         sh '''#!/usr/bin/env bash
