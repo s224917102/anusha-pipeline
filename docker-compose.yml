@@ -130,6 +130,7 @@ services:
     volumes:
       - ./frontend:/usr/share/nginx/html
 
+
 volumes:
   product_db_data:
   order_db_data:
