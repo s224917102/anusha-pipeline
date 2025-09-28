@@ -10,7 +10,6 @@ pipeline {
   environment {
     PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-    // Docker Hub / images
     DOCKERHUB_NS    = 's224917102'
     DOCKERHUB_CREDS = 'dockerhub-s224917102'
     REGISTRY        = 'docker.io'
@@ -18,24 +17,20 @@ pipeline {
     ORDER_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
     FRONTEND_IMG    = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
 
-    // Local build tags from compose
     LOCAL_IMG_PRODUCT  = 'week09_example02_product_service:latest'
     LOCAL_IMG_ORDER    = 'week09_example02_order_service:latest'
     LOCAL_IMG_FRONTEND = 'week09_example02_frontend:latest'
 
-    // K8s
     KUBE_CONTEXT  = 'docker-desktop'
     NAMESPACE     = 'default'
     K8S_DIR       = 'k8s'
 
-    // SonarQube
     SONARQUBE = 'SonarQube'
     SCANNER   = 'SonarScanner'
     SONAR_PROJECT_KEY  = 'sit753-anusha'
     SONAR_PROJECT_NAME = 'SIT753 Microservices'
     SONAR_SOURCES      = '.'
 
-    // Paths
     PRODUCT_DIR  = 'backend/product_service'
     ORDER_DIR    = 'backend/order_service'
     FRONTEND_DIR = 'frontend'
@@ -66,7 +61,7 @@ pipeline {
             echo "[BUILD] No docker-compose file found; skipping compose build."
           fi
 
-          echo "[BUILD] Re-tag local images → Docker Hub names"
+          echo "[BUILD] Re-tag local images → Docker Hub"
           docker image inspect ${LOCAL_IMG_PRODUCT}  >/dev/null
           docker image inspect ${LOCAL_IMG_ORDER}    >/dev/null
           docker image inspect ${LOCAL_IMG_FRONTEND} >/dev/null
@@ -89,7 +84,6 @@ pipeline {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 
-# -------- speed-ups: cache wheels/venvs --------
 export PIP_CACHE_DIR="$WORKSPACE/.pip-cache"
 mkdir -p "$PIP_CACHE_DIR"
 
@@ -122,7 +116,6 @@ make_venv () {
   fi
 }
 
-# -------- unit DBs --------
 echo "[TEST][UNIT] Clean old DBs"
 docker rm -f product_db order_db >/dev/null 2>&1 || true
 
@@ -150,12 +143,14 @@ for name in product_db order_db; do
   done
 done
 
-# Avoid auto-loading host pytest plugins
+# Avoid host auto-plugins that cause conflicts
 export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 
-# -------- product unit tests (uses your existing test_main.py) --------
+# -------- product unit tests --------
 echo "[TEST][UNIT] Product"
-make_venv ".venv_prod_${PROD_KEY}" -r ${PRODUCT_DIR}/requirements.txt ${PRODUCT_DIR}/requirements-dev.txt "pytest>=8,<9" "pytest-timeout==2.3.1"
+PROD_REQ_ARGS=( -r "${PRODUCT_DIR}/requirements.txt" )
+[ -f "${PRODUCT_DIR}/requirements-dev.txt" ] && PROD_REQ_ARGS+=( -r "${PRODUCT_DIR}/requirements-dev.txt" )
+make_venv ".venv_prod_${PROD_KEY}" "${PROD_REQ_ARGS[@]}" "pytest>=8,<9" "pytest-timeout==2.3.1"
 . ".venv_prod_${PROD_KEY}/bin/activate"
 export POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DB=products POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
 pytest -q -p pytest_timeout ${PRODUCT_DIR}/tests --junitxml=product_unit.xml --timeout=60 --timeout-method=thread
@@ -163,7 +158,9 @@ deactivate
 
 # -------- order unit tests --------
 echo "[TEST][UNIT] Order"
-make_venv ".venv_order_${ORDER_KEY}" -r ${ORDER_DIR}/requirements.txt ${ORDER_DIR}/requirements-dev.txt "pytest>=8,<9" "pytest-timeout==2.3.1"
+ORDER_REQ_ARGS=( -r "${ORDER_DIR}/requirements.txt" )
+[ -f "${ORDER_DIR}/requirements-dev.txt" ] && ORDER_REQ_ARGS+=( -r "${ORDER_DIR}/requirements-dev.txt" )
+make_venv ".venv_order_${ORDER_KEY}" "${ORDER_REQ_ARGS[@]}" "pytest>=8,<9" "pytest-timeout==2.3.1"
 . ".venv_order_${ORDER_KEY}/bin/activate"
 export POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_DB=orders POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
 pytest -q -p pytest_timeout ${ORDER_DIR}/tests --junitxml=order_unit.xml --timeout=60 --timeout-method=thread
@@ -172,7 +169,7 @@ deactivate
 echo "[TEST][UNIT] Stop DBs"
 docker rm -f product_db order_db >/dev/null 2>&1 || true
 
-# -------- integration tests (tests/integration/*) --------
+# -------- integration tests --------
 if [ -d tests/integration ]; then
   echo "[TEST][INT] docker compose up"
   (docker compose up -d --remove-orphans || docker-compose up -d --remove-orphans)
@@ -192,7 +189,7 @@ if [ -d tests/integration ]; then
   fi
 
   echo "[TEST][INT] venv & run"
-  make_venv ".venv_int_${INT_KEY}" "pytest>=8,<9" "pytest-timeout==2.3.1" requests
+  make_venv ".venv_int_${INT_KEY}" pytest\>=8,\<9 pytest-timeout==2.3.1 requests
   . ".venv_int_${INT_KEY}/bin/activate"
   export PRODUCT_BASE=${PRODUCT_BASE:-http://localhost:8000}
   export ORDER_BASE=${ORDER_BASE:-http://localhost:8001}
@@ -303,7 +300,7 @@ fi
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          echo "[MONITOR] Health checks (optional, if k8s services exist)"
+          echo "[MONITOR] Health checks"
           PRODUCT_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=product-service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
           ORDER_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=order-service   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
