@@ -27,8 +27,8 @@ pipeline {
 
     SONARQUBE = 'SonarQube'
     SCANNER   = 'SonarScanner' // not used now, but keeping for reference
-    SONAR_PROJECT_KEY  = 'sit753-anusha'
-    SONAR_PROJECT_NAME = 'SIT753 Microservices'
+    SONAR_PROJECT_KEY  = 's224917102_DevOpsPipeline'
+    SONAR_PROJECT_NAME = 'DevOpsPipeline'
     SONAR_SOURCES      = '.'
 
     PRODUCT_DIR  = 'backend/product_service'
