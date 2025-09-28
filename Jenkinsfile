@@ -13,6 +13,7 @@ pipeline {
     DOCKERHUB_NS    = 's224917102'
     DOCKERHUB_CREDS = 'dockerhub-s224917102'
     REGISTRY        = 'docker.io'
+
     PRODUCT_IMG     = "${REGISTRY}/${DOCKERHUB_NS}/product_service"
     ORDER_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
     FRONTEND_IMG    = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
@@ -26,7 +27,6 @@ pipeline {
     K8S_DIR       = 'k8s'
 
     SONARQUBE = 'SonarQube'
-    SCANNER   = 'SonarScanner'
     SONAR_PROJECT_KEY  = 's224917102_DevOpsPipeline'
     SONAR_PROJECT_NAME = 'DevOpsPipeline'
     SONAR_SOURCES      = '.'
@@ -51,18 +51,11 @@ pipeline {
         }
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          echo "[CHECK] PATH=$PATH"
+
           echo "[CHECK] docker=$(command -v docker || true)"
-          echo "[CHECK] docker compose=$(docker compose version | head -1 || true)"
-          echo "[CHECK] kubectl=$(command -v kubectl || true)"
+          echo "[CHECK] docker compose=$(docker compose version | head -1 || docker-compose version | head -1 || true)"
 
-          if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
-            echo "[BUILD] Using docker compose to build images"
-            docker compose build --pull
-          else
-            echo "[BUILD] No docker-compose file found; skipping compose build."
-          fi
-
+          # If your repo already does the compose build, we only need to retag local images here
           echo "[BUILD] Re-tag local images → Docker Hub names"
           docker image inspect ${LOCAL_IMG_PRODUCT}  >/dev/null
           docker image inspect ${LOCAL_IMG_ORDER}    >/dev/null
@@ -154,19 +147,10 @@ pipeline {
           echo "[TEST][INT] Compose up (if tests/integration exists)"
           if [ -d tests/integration ]; then
             (docker compose up -d --remove-orphans || docker-compose up -d --remove-orphans)
-            wait_http () { url="$1"; max="$2"; i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $max ] && return 1; sleep 1; done; }
-            if ! wait_http "http://localhost:8000/health" 90; then
-              echo "[TEST][INT] product_service not ready in time"
-              (docker compose logs product_service || docker-compose logs product_service) | tail -200 || true
-              (docker compose down -v || docker-compose down -v) || true
-              exit 1
-            fi
-            if ! wait_http "http://localhost:8001/health" 90; then
-              echo "[TEST][INT] order_service not ready in time"
-              (docker compose logs order_service || docker-compose logs order_service) | tail -200 || true
-              (docker compose down -v || docker-compose down -v) || true
-              exit 1
-            fi
+            wait_http () { url="$1"; max="${2:-90}"; i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $max ] && return 1; sleep 1; done; }
+            wait_http "http://localhost:8000/health" 90
+            wait_http "http://localhost:8001/health" 90
+
             INT_KEY=$(date +%s)
             make_venv ".venv_int_${INT_KEY}" "pytest>=8,<9" "pytest-timeout==2.3.1" requests
             . ".venv_int_${INT_KEY}/bin/activate"
@@ -175,7 +159,6 @@ pipeline {
             export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
             pytest -q -p pytest_timeout tests/integration --junitxml=integration.xml --timeout=90 --timeout-method=thread
             deactivate
-            echo "[TEST][INT] Compose down"
             (docker compose down -v || docker-compose down -v)
           else
             echo "[TEST][INT] No tests/integration — skipping"
@@ -202,18 +185,11 @@ pipeline {
                 exit 1
               fi
               TOKEN="${SONAR_TOKEN:-${SONAR_AUTH_TOKEN:-}}"
-              if [ -z "$TOKEN" ]; then
-                echo "[QUALITY][ERROR] No token available. Provide Jenkins secret 'SONAR_TOKEN'."
-                exit 1
-              fi
+              [ -z "$TOKEN" ] && { echo "[QUALITY][ERROR] No token available. Provide Jenkins secret 'SONAR_TOKEN'."; exit 1; }
               HURL="${SONAR_HOST_URL:-https://sonarcloud.io}"
-              echo "[QUALITY] Validating token…"
               OUT="$(curl -sS -u "${TOKEN}:" "${HURL%/}/api/authentication/validate" || true)"
               echo "$OUT" | grep -q '"valid":true' || { echo "[QUALITY][ERROR] Invalid Sonar token for ${HURL}: $OUT"; exit 1; }
-              docker run --rm --platform=linux/amd64 \
-                -e SONAR_HOST_URL="$HURL" -e SONAR_TOKEN="$TOKEN" \
-                -v "$PWD:/usr/src" -w /usr/src \
-                sonarsource/sonar-scanner-cli:latest
+              docker run --rm --platform=linux/amd64 -e SONAR_HOST_URL="$HURL" -e SONAR_TOKEN="$TOKEN" -v "$PWD:/usr/src" -w /usr/src sonarsource/sonar-scanner-cli:latest
             '''
           }
         }
@@ -227,119 +203,176 @@ pipeline {
           mkdir -p .trivy-cache reports
 
           echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
-          docker run --rm \
-            -v "$PWD:/src" \
-            -e TRIVY_CACHE_DIR=/src/.trivy-cache \
+          docker run --rm -v "$PWD:/src" -e TRIVY_CACHE_DIR=/src/.trivy-cache \
             aquasec/trivy:${TRIVY_VER} fs \
-              --scanners vuln,secret,misconfig \
-              --severity HIGH,CRITICAL \
-              --ignore-unfixed \
-              --format json \
-              --output /src/reports/trivy-fs.json \
-              /src
+            --scanners vuln,secret,misconfig \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --format json \
+            --output /src/reports/trivy-fs.json \
+            /src || true
 
-          docker run --rm \
-            -v "$PWD:/src" \
-            -e TRIVY_CACHE_DIR=/src/.trivy-cache \
+          docker run --rm -v "$PWD:/src" -e TRIVY_CACHE_DIR=/src/.trivy-cache \
             aquasec/trivy:${TRIVY_VER} fs \
-              --scanners vuln,secret,misconfig \
-              --severity HIGH,CRITICAL \
-              --ignore-unfixed \
-              --format sarif \
-              --output /src/reports/trivy-fs.sarif \
-              --exit-code 0 \
-              /src
+            --scanners vuln,secret,misconfig \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --format sarif \
+            --output /src/reports/trivy-fs.sarif \
+            /src || true
 
           echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL)"
-          declare -A MAP=(
-            ["product"]="${LOCAL_IMG_PRODUCT}"
-            ["order"]="${LOCAL_IMG_ORDER}"
-            ["frontend"]="${LOCAL_IMG_FRONTEND}"
-          )
+          declare -A MAP
+          MAP["${PRODUCT_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_PRODUCT}"
+          MAP["${ORDER_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_ORDER}"
+          MAP["${FRONTEND_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_FRONTEND}"
 
-          for NAME in "${!MAP[@]}"; do
-            LOCAL_REF="${MAP[$NAME]}"
-            echo "[SECURITY] Saving local image: ${LOCAL_REF}"
+          for TARGET_REF in "${!MAP[@]}"; do
+            LOCAL_REF="${MAP[$TARGET_REF]}"
+            echo "[SECURITY] Save ${LOCAL_REF} -> image.tar"
             rm -f image.tar
             docker image inspect "${LOCAL_REF}" >/dev/null
             docker save "${LOCAL_REF}" -o image.tar
 
-            echo "[SECURITY] Trivy image (tar) ${NAME}"
-            docker run --rm \
-              -v "$PWD:/work" \
-              -e TRIVY_CACHE_DIR=/work/.trivy-cache \
+            echo "[SECURITY] Scan ${TARGET_REF}"
+            docker run --rm -v "$PWD:/work" -e TRIVY_CACHE_DIR=/work/.trivy-cache \
               aquasec/trivy:${TRIVY_VER} image \
-                --input /work/image.tar \
-                --scanners vuln \
-                --severity HIGH,CRITICAL \
-                --ignore-unfixed \
-                --format json \
-                --output /work/reports/trivy-image-${NAME}.json \
-                --exit-code 1 \
-                --timeout 10m
+              --input /work/image.tar \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --format json \
+              --output /work/reports/trivy-image-$(echo "${TARGET_REF}" | tr '/:' '_').json \
+              --timeout 10m
+
+            # Enforce gate (separate invocation so we still keep JSON report even if it fails)
+            docker run --rm -v "$PWD:/work" -e TRIVY_CACHE_DIR=/work/.trivy-cache \
+              aquasec/trivy:${TRIVY_VER} image \
+              --input /work/image.tar \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --exit-code 1 \
+              --timeout 10m
           done
         '''
       }
       post {
         always {
-          archiveArtifacts artifacts: 'reports/*.json, reports/*.sarif', allowEmptyArchive: true
+          archiveArtifacts artifacts: 'reports/**', fingerprint: true, onlyIfSuccessful: false
         }
       }
     }
 
-    /* ===== Deploy BEFORE Release (staging/test env) ===== */
     stage('Deploy') {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          echo "[DEPLOY] Context ${KUBE_CONTEXT}"
-          kubectl config use-context ${KUBE_CONTEXT}
-          kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-          for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml; do
-            [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
-          done
-
-          update_img () {
-            app_label="$1"; new_ref="$2"
-            dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-            [ -z "$dep" ] && { echo "[DEPLOY][WARN] No deployment for app=${app_label}"; return 0; }
-            container="$(kubectl get deploy "$dep" -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].name}')"
-            echo "[DEPLOY] set image deploy/${dep} ${container}=${new_ref}"
-            kubectl set image deploy/"$dep" "${container}=${new_ref}" -n ${NAMESPACE}
-            kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=180s
+          compose () {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
+            else
+              docker-compose "$@"
+            fi
           }
 
-          update_img product-service ${PRODUCT_IMG}:${IMAGE_TAG}
-          update_img order-service   ${ORDER_IMG}:${IMAGE_TAG}
-          update_img frontend        ${FRONTEND_IMG}:${IMAGE_TAG}
+          wait_http () {
+            url="$1"; tries="${2:-90}"
+            i=0
+            until curl -fsS "$url" >/dev/null 2>&1; do
+              i=$((i+1))
+              [ $i -ge $tries ] && return 1
+              sleep 1
+            done
+          }
+
+          echo "[DEPLOY] Staging with docker-compose (no rebuilds)"
+          if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
+            compose up -d --remove-orphans
+            compose ps || true
+
+            echo "[DEPLOY] Health checks: product, order, frontend, prometheus, grafana"
+            # Product
+            if ! wait_http "http://localhost:8000/health" 90; then
+              echo "[DEPLOY][WARN] product /health failed; trying root /"
+              wait_http "http://localhost:8000/" 30 || FAIL_PRODUCT=1
+            fi
+            # Order
+            if ! wait_http "http://localhost:8001/health" 90; then
+              echo "[DEPLOY][WARN] order /health failed; trying root /"
+              wait_http "http://localhost:8001/" 30 || FAIL_ORDER=1
+            fi
+            # Frontend
+            wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
+            # Prometheus
+            wait_http "http://localhost:9090/" 90 || FAIL_PROM=1
+            # Grafana
+            wait_http "http://localhost:3000/" 90 || FAIL_GRAF=1
+
+            if [ "${FAIL_PRODUCT:-0}" -ne 0 ] || [ "${FAIL_ORDER:-0}" -ne 0 ] || \
+               [ "${FAIL_FRONTEND:-0}" -ne 0 ] || [ "${FAIL_PROM:-0}" -ne 0 ] || \
+               [ "${FAIL_GRAF:-0}" -ne 0 ]; then
+              echo "[DEPLOY][ERROR] Staging health checks failed. Attempting rollback to :latest tags where applicable."
+              compose logs --no-color > reports/compose-failed.log || true
+              # Best-effort rollback: restart stack forcing :latest images if your compose uses tags
+              COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d || true
+              exit 1
+            fi
+
+            echo "[DEPLOY] Staging environment is healthy."
+          else
+            echo "[DEPLOY][WARN] No docker-compose file present. Skipping staging deploy."
+          fi
         '''
       }
     }
 
-    /* ===== Release AFTER Deploy (promotion/push to registry, tag, etc.) ===== */
     stage('Release') {
       steps {
         withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''#!/usr/bin/env bash
             set -euo pipefail
-            echo "[RELEASE] Login & push tags"
+            echo "[RELEASE] Login & push images"
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-            for i in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-              docker push $i:${IMAGE_TAG}
-              docker push $i:latest
-            done
-            docker tag ${PRODUCT_IMG}:${IMAGE_TAG}  ${PRODUCT_IMG}:${RELEASE_TAG}
-            docker tag ${ORDER_IMG}:${IMAGE_TAG}    ${ORDER_IMG}:${RELEASE_TAG}
-            docker tag ${FRONTEND_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${RELEASE_TAG}
-            for i in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-              docker push $i:${RELEASE_TAG}
+
+            for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
+              docker push $img:${IMAGE_TAG}
+              docker push $img:latest
+              docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
+              docker push $img:${RELEASE_TAG}
             done
 
-            git config user.email "ci@jenkins"
-            git config user.name  "Jenkins CI"
-            git tag -a "${RELEASE_TAG}" -m "Release ${RELEASE_TAG}" || true
-            git push origin "${RELEASE_TAG}" || true
+            echo "[RELEASE] Deploy to local Kubernetes (${KUBE_CONTEXT})"
+            kubectl config use-context ${KUBE_CONTEXT}
+            kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+
+            # Apply infra-as-code (manifests) first
+            for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml; do
+              [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+            done
+
+            # Helper: set image + rollout with rollback on failure
+            update_img () {
+              app_label="$1"; new_ref="$2"
+              dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+              [ -z "$dep" ] && { echo "[RELEASE][WARN] No deployment for app=${app_label}"; return 0; }
+              container="$(kubectl get deploy "$dep" -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].name}')"
+              echo "[RELEASE] set image deploy/${dep} ${container}=${new_ref}"
+              kubectl set image deploy/"$dep" "${container}=${new_ref}" -n ${NAMESPACE}
+              if ! kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=180s; then
+                echo "[RELEASE][ERROR] Rollout failed for ${dep}. Rolling back…"
+                kubectl rollout undo deploy/"$dep" -n ${NAMESPACE} || true
+                kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=120s || true
+                exit 1
+              fi
+            }
+
+            update_img product-service ${PRODUCT_IMG}:${IMAGE_TAG}
+            update_img order-service   ${ORDER_IMG}:${IMAGE_TAG}
+            update_img frontend        ${FRONTEND_IMG}:${IMAGE_TAG}
+
+            echo "[RELEASE] Kubernetes release complete."
           '''
         }
       }
@@ -349,7 +382,7 @@ pipeline {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          echo "[MONITOR] Health checks"
+          echo "[MONITOR] Quick health checks via port-forward"
           PRODUCT_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=product-service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
           ORDER_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=order-service   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
