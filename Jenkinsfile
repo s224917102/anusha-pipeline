@@ -14,12 +14,12 @@ pipeline {
 
   environment {
     // ===== Registry (Docker Hub) =====
-    DOCKERHUB_NS    = 's224917102'
-    DOCKERHUB_CREDS = 'dockerhub-s224917102'
-    REGISTRY        = 'docker.io'
-    PRODUCT_IMG     = "${REGISTRY}/${DOCKERHUB_NS}/product_service"
-    ORDER_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
-    FRONTEND_IMG    = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
+    DOCKERHUB_NS       = 's224917102'
+    DOCKERHUB_CREDS    = 'dockerhub-s224917102'
+    REGISTRY           = 'docker.io'
+    PRODUCT_IMG        = "${REGISTRY}/${DOCKERHUB_NS}/product_service"
+    ORDER_IMG          = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
+    FRONTEND_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
 
     // ===== Local images (built by docker compose) =====
     LOCAL_IMG_PRODUCT  = 'localhost/week09_example02_product_service:latest'
@@ -32,15 +32,15 @@ pipeline {
     K8S_DIR       = 'k8s'
 
     // ===== SonarCloud (names must match Jenkins global config) =====
-    SONAR_SERVER_NAME = 'SonarQube'    // Manage Jenkins → System → SonarQube servers (name)
-    SONAR_SCANNER_NAME = 'SonarScanner'// Manage Jenkins → Global Tool Configuration (tool name)
+    SONAR_SERVER_NAME   = 'SonarQube'     // Manage Jenkins → System → SonarQube servers (name)
+    SONAR_SCANNER_NAME  = 'SonarScanner'  // Manage Jenkins → Global Tool Configuration (tool name)
 
     // ===== Project paths =====
     PRODUCT_DIR  = 'backend/product_service'
     ORDER_DIR    = 'backend/order_service'
     FRONTEND_DIR = 'frontend'
 
-    // ===== Derived at runtime =====
+    // ===== Derived at runtime (exported before shell usage) =====
     GIT_SHA     = ''
     IMAGE_TAG   = ''     // <sha>-<build>   (e.g., e0f281c-42)
     RELEASE_TAG = ''     // v<build>.<sha>  (e.g., v42.e0f281c)
@@ -53,9 +53,12 @@ pipeline {
       steps {
         checkout scm
         script {
-          env.GIT_SHA     = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
-          env.IMAGE_TAG   = "${env.GIT_SHA}-${env.BUILD_NUMBER}"
-          env.RELEASE_TAG = "v${env.BUILD_NUMBER}.${env.GIT_SHA}"
+          // compute, then export to env.* so subsequent sh sees them
+          def sha = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+          env.GIT_SHA     = sha
+          env.IMAGE_TAG   = "${sha}-${env.BUILD_NUMBER}"
+          env.RELEASE_TAG = "v${env.BUILD_NUMBER}.${sha}"
+          echo "[BUILD] Computed IMAGE_TAG=${env.IMAGE_TAG} | RELEASE_TAG=${env.RELEASE_TAG}"
         }
         sh '''
           set -euo pipefail
