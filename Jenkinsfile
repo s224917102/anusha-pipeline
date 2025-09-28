@@ -257,9 +257,6 @@ pipeline {
         }
     }
 
-
-
-
     stage('Security') {
       steps {
         sh '''#!/usr/bin/env bash
