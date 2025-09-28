@@ -25,8 +25,7 @@ pipeline {
     NAMESPACE     = 'default'
     K8S_DIR       = 'k8s'
 
-    SONARQUBE = 'SonarQube'     // Jenkins global tool name
-    SCANNER   = 'SonarScanner'  // Jenkins global tool name
+    SONARQUBE = 'SonarQube'     // Jenkins server config name
     SONAR_PROJECT_KEY  = 'sit753-anusha'
     SONAR_PROJECT_NAME = 'SIT753 Microservices'
     SONAR_SOURCES      = '.'
@@ -102,14 +101,12 @@ for name in product_db order_db; do
   echo " - $name is ready"
 done
 
-# Helper to create a venv and upgrade pip
 py_venv () {
   python3 -m venv "$1"
   . "$1/bin/activate"
   python -m pip install -U pip wheel >/dev/null
 }
 
-# --- Product service unit tests ---
 if [ -d "${PRODUCT_DIR}" ]; then
   echo "[TEST] === product_service unit tests ==="
   py_venv .venv_prod
@@ -117,17 +114,13 @@ if [ -d "${PRODUCT_DIR}" ]; then
   python -m pip install -r ${PRODUCT_DIR}/requirements.txt >/dev/null
   [ -f ${PRODUCT_DIR}/requirements-dev.txt ] && python -m pip install -r ${PRODUCT_DIR}/requirements-dev.txt >/dev/null || true
   python -m pip install "pytest>=8,<9" "pytest-timeout==2.3.1" >/dev/null
-
-  # Prevent auto-loading random site plugins that caused 'Plugin already registered'
   export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
   export POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_DB=products POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
-
   pytest -p pytest_timeout ${PRODUCT_DIR}/tests \
     --junitxml=product_unit.xml \
     -q -x --maxfail=1 --durations=10 --timeout=60 --timeout-method=thread
 fi
 
-# --- Order service unit tests ---
 if [ -d "${ORDER_DIR}" ]; then
   echo "[TEST] === order_service unit tests ==="
   py_venv .venv_order
@@ -135,10 +128,8 @@ if [ -d "${ORDER_DIR}" ]; then
   python -m pip install -r ${ORDER_DIR}/requirements.txt >/dev/null
   [ -f ${ORDER_DIR}/requirements-dev.txt ] && python -m pip install -r ${ORDER_DIR}/requirements-dev.txt >/dev/null || true
   python -m pip install "pytest>=8,<9" "pytest-timeout==2.3.1" >/dev/null
-
   export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
   export POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_DB=orders POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
-
   pytest -p pytest_timeout ${ORDER_DIR}/tests \
     --junitxml=order_unit.xml \
     -q -x --maxfail=1 --durations=10 --timeout=60 --timeout-method=thread
@@ -147,28 +138,22 @@ fi
 echo "[TEST] Stop DB containers"
 docker rm -f product_db order_db >/dev/null 2>&1 || true
 
-# --- Integration tests (docker compose) ---
 if [ -d tests/integration ]; then
   echo "[TEST] === integration tests (compose) ==="
   (docker compose up -d --remove-orphans || docker-compose up -d --remove-orphans)
-  # Give services a moment; tests also wait on /health
   sleep 10
-
   py_venv .venv_int
   . .venv_int/bin/activate
   python -m pip install "pytest>=8,<9" "pytest-timeout==2.3.1" requests >/dev/null
-
   export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
   export PRODUCT_BASE=${PRODUCT_BASE:-http://localhost:8000}
   export ORDER_BASE=${ORDER_BASE:-http://localhost:8001}
-
   pytest -p pytest_timeout tests/integration \
     --junitxml=integration.xml \
     -q -x --maxfail=1 --durations=10 --timeout=90 --timeout-method=thread || {
       (docker compose down -v || docker-compose down -v)
       exit 1
     }
-
   (docker compose down -v || docker-compose down -v)
 else
   echo "[TEST] No integration tests directory — skipping compose up"
@@ -186,11 +171,19 @@ fi
     stage('Code Quality') {
       steps {
         withSonarQubeEnv("${SONARQUBE}") {
-          withEnv(["PATH+SCANNER=${tool SCANNER}/bin"]) {
-            sh '''#!/bin/sh
+          sh '''#!/bin/sh
 set -eu
-echo "[QUALITY] Sonar analysis"
-sonar-scanner \
+echo "[QUALITY] Sonar analysis via Docker (bundled Java)"
+
+# Jenkins SonarQube plugin exports SONAR_HOST_URL and SONAR_AUTH_TOKEN
+# sonar-scanner-cli expects SONAR_HOST_URL + SONAR_LOGIN (or SONAR_TOKEN on newer images).
+# Pass both for compatibility.
+docker run --rm \
+  -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+  -e SONAR_LOGIN="$SONAR_AUTH_TOKEN" \
+  -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
+  -v "$(pwd)":/usr/src \
+  sonarsource/sonar-scanner-cli:5.0 \
   -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
   -Dsonar.projectName="${SONAR_PROJECT_NAME}" \
   -Dsonar.projectVersion=${IMAGE_TAG} \
@@ -200,7 +193,6 @@ sonar-scanner \
   -Dsonar.tests=${PRODUCT_DIR}/tests,${ORDER_DIR}/tests \
   -Dsonar.test.inclusions=**/tests/**
 '''
-          }
         }
       }
     }
