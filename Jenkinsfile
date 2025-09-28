@@ -2,14 +2,13 @@ pipeline {
   agent any
 
   triggers {
-    // poll Git every ~2 minutes
+    // Poll Git every ~2 minutes
     pollSCM('H/2 * * * *')
   }
 
   options {
     disableConcurrentBuilds()
     timestamps()
-    ansiColor('xterm')
     buildDiscarder(logRotator(numToKeepStr: '20'))
   }
 
@@ -34,7 +33,7 @@ pipeline {
 
     // ===== SonarCloud (names must match Jenkins global config) =====
     SONAR_SERVER_NAME = 'SonarQube'    // Manage Jenkins → System → SonarQube servers (name)
-    SONAR_SCANNER     = 'SonarScanner' // Manage Jenkins → Global Tool Configuration (tool name)
+    SONAR_SCANNER_NAME = 'SonarScanner'// Manage Jenkins → Global Tool Configuration (tool name)
 
     // ===== Project paths =====
     PRODUCT_DIR  = 'backend/product_service'
@@ -170,38 +169,41 @@ pipeline {
       environment { SONAR_TOKEN = credentials('SONAR_TOKEN') }
       steps {
         withSonarQubeEnv("${SONAR_SERVER_NAME}") {
-          withEnv(["PATH+SCANNER=${tool SONAR_SCANNER}/bin"]) {
-            sh '''
-              set -euo pipefail
-              echo "[QUALITY] Generate coverage for SonarCloud"
+          script {
+            def scannerBin = tool "${SONAR_SCANNER_NAME}"
+            withEnv(["PATH+SCANNER=${scannerBin}/bin"]) {
+              sh '''
+                set -euo pipefail
+                echo "[QUALITY] Generate coverage for SonarCloud"
 
-              if [ -d ${PRODUCT_DIR} ]; then
-                python3 -m venv .venv_cov_prod
-                . .venv_cov_prod/bin/activate
-                pip install -U pip pytest pytest-cov -r ${PRODUCT_DIR}/requirements.txt || true
-                pytest -q ${PRODUCT_DIR}/tests --cov=${PRODUCT_DIR} --cov-report=xml:cov_prod.xml
-              fi
+                if [ -d ${PRODUCT_DIR} ]; then
+                  python3 -m venv .venv_cov_prod
+                  . .venv_cov_prod/bin/activate
+                  pip install -U pip pytest pytest-cov -r ${PRODUCT_DIR}/requirements.txt || true
+                  pytest -q ${PRODUCT_DIR}/tests --cov=${PRODUCT_DIR} --cov-report=xml:cov_prod.xml
+                fi
 
-              if [ -d ${ORDER_DIR} ]; then
-                python3 -m venv .venv_cov_order
-                . .venv_cov_order/bin/activate
-                pip install -U pip pytest pytest-cov -r ${ORDER_DIR}/requirements.txt || true
-                pytest -q ${ORDER_DIR}/tests --cov=${ORDER_DIR} --cov-report=xml:cov_order.xml
-              fi
+                if [ -d ${ORDER_DIR} ]; then
+                  python3 -m venv .venv_cov_order
+                  . .venv_cov_order/bin/activate
+                  pip install -U pip pytest pytest-cov -r ${ORDER_DIR}/requirements.txt || true
+                  pytest -q ${ORDER_DIR}/tests --cov=${ORDER_DIR} --cov-report=xml:cov_order.xml
+                fi
 
-              # choose one coverage file (simple approach)
-              if [ -f cov_prod.xml ]; then mv cov_prod.xml coverage.xml; fi
-              if [ -f cov_order.xml ] && [ ! -f coverage.xml ]; then mv cov_order.xml coverage.xml; fi
-              [ -f coverage.xml ] || echo "<coverage/>" > coverage.xml
+                # choose one coverage file (simple approach)
+                if [ -f cov_prod.xml ]; then mv cov_prod.xml coverage.xml; fi
+                if [ -f cov_order.xml ] && [ ! -f coverage.xml ]; then mv cov_order.xml coverage.xml; fi
+                [ -f coverage.xml ] || echo "<coverage/>" > coverage.xml
 
-              echo "[QUALITY] Run SonarScanner (sonar-project.properties supplies keys)"
-              sonar-scanner \
-                -Dsonar.projectVersion=${IMAGE_TAG} \
-                -Dsonar.login=$SONAR_TOKEN
-            '''
+                echo "[QUALITY] Run SonarScanner (sonar-project.properties supplies keys)"
+                sonar-scanner \
+                  -Dsonar.projectVersion=${IMAGE_TAG} \
+                  -Dsonar.login=$SONAR_TOKEN
+              '''
+            }
           }
         }
-        // Quality Gate gating stays inside this stage to keep total stages at 7
+        // Keep Quality Gate wait here to maintain 7 total stages
         timeout(time: 5, unit: 'MINUTES') {
           waitForQualityGate abortPipeline: true
         }
@@ -225,7 +227,7 @@ pipeline {
       }
     }
 
-    // 5) DEPLOY (to local Kubernetes)
+    // 5) DEPLOY (local Kubernetes)
     stage('Deploy') {
       steps {
         sh '''
