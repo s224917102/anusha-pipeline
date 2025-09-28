@@ -16,17 +16,33 @@ spec:
       labels:
         app: frontend
     spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
-      - name: frontend-container
-        image: docker.io/s224917102/order_service:latest # added imagename
-        imagePullPolicy: Always
-        ports:
-          - containerPort: 80
+        - name: frontend-container
+          image: docker.io/s224917102/frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080          # non-privileged in-container port
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp              # writable scratch only
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: frontend # Service name matches
+  name: frontend
   labels:
     app: frontend
 spec:
@@ -34,6 +50,6 @@ spec:
     app: frontend
   ports:
     - protocol: TCP
-      port: 80 # The port the service listens on inside the cluster
-      targetPort: 80 # The port on the Pod (containerPort where Nginx runs)
-  type: LoadBalancer # Exposes the service on a port on each Node's IP
+      port: 80                 # external/cluster port (kept at 80)
+      targetPort: 8080         # maps to new container port
+  type: LoadBalancer

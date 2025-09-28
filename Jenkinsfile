@@ -221,51 +221,103 @@ pipeline {
     }
 
     stage('Security') {
-        steps {
-            sh '''#!/usr/bin/env bash
-            set -euo pipefail
-            mkdir -p .trivy-cache
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p .trivy-cache reports
 
-            echo "[SECURITY] Trivy filesystem scan (advisory: misconfig+secret)"
+          echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
+          docker run --rm \
+            -v "$PWD:/src" \
+            -e TRIVY_CACHE_DIR=/src/.trivy-cache \
+            aquasec/trivy:${TRIVY_VER} fs \
+              --scanners vuln,secret,misconfig \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --format json \
+              --output /src/reports/trivy-fs.json \
+              /src
+
+          docker run --rm \
+            -v "$PWD:/src" \
+            -e TRIVY_CACHE_DIR=/src/.trivy-cache \
+            aquasec/trivy:${TRIVY_VER} fs \
+              --scanners vuln,secret,misconfig \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --format sarif \
+              --output /src/reports/trivy-fs.sarif \
+              --exit-code 0 \
+              /src
+
+          echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL)"
+          declare -A MAP=(
+            ["product"]="${LOCAL_IMG_PRODUCT}"
+            ["order"]="${LOCAL_IMG_ORDER}"
+            ["frontend"]="${LOCAL_IMG_FRONTEND}"
+          )
+
+          for NAME in "${!MAP[@]}"; do
+            LOCAL_REF="${MAP[$NAME]}"
+            echo "[SECURITY] Saving local image: ${LOCAL_REF}"
+            rm -f image.tar
+            docker image inspect "${LOCAL_REF}" >/dev/null
+            docker save "${LOCAL_REF}" -o image.tar
+
+            echo "[SECURITY] Trivy image (tar) ${NAME}"
             docker run --rm \
-                -v "$PWD:/src" \
-                -e TRIVY_CACHE_DIR=/src/.trivy-cache \
-                aquasec/trivy:${TRIVY_VER} fs \
-                --scanners vuln,secret,misconfig \
-                --severity HIGH,CRITICAL \
-                --ignore-unfixed \
-                --exit-code 0 \        # <— do NOT fail pipeline here
-                /src
-
-            echo "[SECURITY] Prepare local image TARs for scan (blocking on vulns)"
-            declare -A MAP
-            MAP["${PRODUCT_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_PRODUCT}"
-            MAP["${ORDER_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_ORDER}"
-            MAP["${FRONTEND_IMG}:${IMAGE_TAG}"]="${LOCAL_IMG_FRONTEND}"
-
-            for TARGET_REF in "${!MAP[@]}"; do
-                LOCAL_REF="${MAP[$TARGET_REF]}"
-                echo "[SECURITY] Save ${LOCAL_REF} -> image.tar"
-                rm -f image.tar
-                docker image inspect "${LOCAL_REF}" >/dev/null
-                docker save "${LOCAL_REF}" -o image.tar
-
-                echo "[SECURITY] Trivy image (tar) ${TARGET_REF} (blocking on HIGH/CRITICAL)"
-                docker run --rm \
-                -v "$PWD:/work" \
-                -e TRIVY_CACHE_DIR=/work/.trivy-cache \
-                aquasec/trivy:${TRIVY_VER} image \
+              -v "$PWD:/work" \
+              -e TRIVY_CACHE_DIR=/work/.trivy-cache \
+              aquasec/trivy:${TRIVY_VER} image \
                 --input /work/image.tar \
                 --scanners vuln \
                 --severity HIGH,CRITICAL \
                 --ignore-unfixed \
+                --format json \
+                --output /work/reports/trivy-image-${NAME}.json \
                 --exit-code 1 \
                 --timeout 10m
-            done
-            '''
+          done
+        '''
+      }
+      post {
+        always {
+          archiveArtifacts artifacts: 'reports/*.json, reports/*.sarif', allowEmptyArchive: true
         }
+      }
     }
 
+    /* ===== Deploy BEFORE Release (staging/test env) ===== */
+    stage('Deploy') {
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
+          echo "[DEPLOY] Context ${KUBE_CONTEXT}"
+          kubectl config use-context ${KUBE_CONTEXT}
+          kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+
+          for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml; do
+            [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+          done
+
+          update_img () {
+            app_label="$1"; new_ref="$2"
+            dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            [ -z "$dep" ] && { echo "[DEPLOY][WARN] No deployment for app=${app_label}"; return 0; }
+            container="$(kubectl get deploy "$dep" -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].name}')"
+            echo "[DEPLOY] set image deploy/${dep} ${container}=${new_ref}"
+            kubectl set image deploy/"$dep" "${container}=${new_ref}" -n ${NAMESPACE}
+            kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=180s
+          }
+
+          update_img product-service ${PRODUCT_IMG}:${IMAGE_TAG}
+          update_img order-service   ${ORDER_IMG}:${IMAGE_TAG}
+          update_img frontend        ${FRONTEND_IMG}:${IMAGE_TAG}
+        '''
+      }
+    }
+
+    /* ===== Release AFTER Deploy (promotion/push to registry, tag, etc.) ===== */
     stage('Release') {
       steps {
         withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
@@ -290,36 +342,6 @@ pipeline {
             git push origin "${RELEASE_TAG}" || true
           '''
         }
-      }
-    }
-
-    stage('Deploy') {
-      steps {
-        sh '''#!/usr/bin/env bash
-          set -euo pipefail
-          echo "[DEPLOY] Context ${KUBE_CONTEXT}"
-          kubectl config use-context ${KUBE_CONTEXT}
-          kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-
-          for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml; do
-            [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
-          done
-
-          # Helper: update image by label -> finds deployment & its first container
-          update_img () {
-            app_label="$1"; new_ref="$2"
-            dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-            [ -z "$dep" ] && { echo "[DEPLOY][WARN] No deployment for app=${app_label}"; return 0; }
-            container="$(kubectl get deploy "$dep" -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].name}')"
-            echo "[DEPLOY] set image deploy/${dep} ${container}=${new_ref}"
-            kubectl set image deploy/"$dep" "${container}=${new_ref}" -n ${NAMESPACE}
-            kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=180s
-          }
-
-          update_img product-service ${PRODUCT_IMG}:${IMAGE_TAG}
-          update_img order-service   ${ORDER_IMG}:${IMAGE_TAG}
-          update_img frontend        ${FRONTEND_IMG}:${IMAGE_TAG}
-        '''
       }
     }
 

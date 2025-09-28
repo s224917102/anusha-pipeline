@@ -16,39 +16,55 @@ spec:
       labels:
         app: order-service
       annotations:
-        prometheus.io/scrape: 'true' # Instruct Prometheus to scrape this pod
-        prometheus.io/path: '/metrics' # The path where metrics are exposed
-        prometheus.io/port: '8000' # The port where metrics are exposed on the container
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8080"        # container listens on 8080 now
     spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
-      - name: order-service-container
-        image: docker.io/s224917102/order_service:latest # added imagename
-        imagePullPolicy: Always
-        ports:
-        - containerPort: 8001
-        env:
-        - name: POSTGRES_HOST
-          value: order-db-service-w09-aks
-        - name: POSTGRES_DB
-          valueFrom:
-            configMapKeyRef:
-              name: ecomm-config-w09-aks
-              key: ORDERS_DB_NAME
-        - name: POSTGRES_USER
-          valueFrom:
-            secretKeyRef:
-              name: ecomm-secrets-w09-aks
-              key: POSTGRES_USER
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: ecomm-secrets-w09-aks
-              key: POSTGRES_PASSWORD
-        - name: PRODUCT_SERVICE_URL
-          valueFrom:
-            configMapKeyRef:
-              name: ecomm-config-w09-aks
-              key: PRODUCT_SERVICE_URL
+        - name: order-service-container
+          image: docker.io/s224917102/order_service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080         # moved from 8001 -> 8080 (non-privileged)
+          env:
+            - name: POSTGRES_HOST
+              value: order-db-service-w09-aks
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: ecomm-config-w09-aks
+                  key: ORDERS_DB_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ecomm-secrets-w09-aks
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ecomm-secrets-w09-aks
+                  key: POSTGRES_PASSWORD
+            - name: PRODUCT_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: ecomm-config-w09-aks
+                  key: PRODUCT_SERVICE_URL
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp              # writable scratch only
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
 ---
 apiVersion: v1
 kind: Service
@@ -61,6 +77,6 @@ spec:
     app: order-service
   ports:
     - protocol: TCP
-      port: 8001
-      targetPort: 8000
+      port: 8001               # external LB/ClusterIP port (unchanged)
+      targetPort: 8080         # maps to new container port
   type: LoadBalancer
