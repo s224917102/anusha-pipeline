@@ -203,33 +203,49 @@ pipeline {
     }
 
     stage('Code Quality') {
-      steps {
+    steps {
+        // Optional: keeps SONAR_HOST_URL available if you configured a server named "SonarQube"
         withSonarQubeEnv("${SONARQUBE}") {
-          sh '''#!/usr/bin/env bash
+        // Use your existing Global credential with ID SONAR_TOKEN
+        withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
+            sh '''#!/usr/bin/env bash
             set -euo pipefail
             echo "[QUALITY] Sonar analysis via Dockerized scanner (bundled Java)"
-            echo "[QUALITY] SONAR_HOST_URL=${SONAR_HOST_URL}"
-            echo "[QUALITY] Project Key=${SONAR_PROJECT_KEY}, Name=${SONAR_PROJECT_NAME}"
 
-            docker run --rm \
-              -e SONAR_HOST_URL="$SONAR_HOST_URL" \
-              -e SONAR_TOKEN="$SONAR_AUTH_TOKEN" \
-              -v "$PWD:/usr/src" \
-              -w /usr/src \
-              sonarsource/sonar-scanner-cli:latest \
-                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                -Dsonar.projectName="${SONAR_PROJECT_NAME}" \
-                -Dsonar.projectVersion=${IMAGE_TAG} \
-                -Dsonar.projectBaseDir=. \
-                -Dsonar.sources=${SONAR_SOURCES} \
-                -Dsonar.tests=${PRODUCT_DIR}/tests,${ORDER_DIR}/tests \
-                -Dsonar.test.inclusions=**/tests/** \
-                -Dsonar.python.version=3.10 \
-                -Dsonar.exclusions=**/.git/**,**/__pycache__/**,**/.venv/**,**/*.png,**/*.jpg,**/*.svg
-          '''
+            # Must exist at repo root; scanner will auto-read it
+            if [ ! -f "sonar-project.properties" ]; then
+                echo "[QUALITY] ERROR: sonar-project.properties not found at repo root."
+                exit 1
+            fi
+
+            # Pick correct platform so Apple Silicon doesn't warn
+            ARCH="$(uname -m)"
+            case "$ARCH" in
+                arm64|aarch64) PLATFORM="linux/arm64" ;;
+                x86_64|amd64)  PLATFORM="linux/amd64" ;;
+                *)             PLATFORM="" ;;
+            esac
+
+            # Prefer SONAR_HOST_URL from withSonarQubeEnv; if empty, the properties file should have sonar.host.url
+            echo "[QUALITY] SONAR_HOST_URL=${SONAR_HOST_URL:-'(from properties)'}"
+            # SONAR_TOKEN comes from your Jenkins credential (ID=SONAR_TOKEN)
+            if [ -z "${SONAR_TOKEN:-}" ]; then
+                echo "[QUALITY] ERROR: SONAR_TOKEN env var not present from credentials."
+                exit 1
+            fi
+
+            docker run --rm ${PLATFORM:+--platform "$PLATFORM"} \
+                -e SONAR_HOST_URL="${SONAR_HOST_URL:-}" \
+                -e SONAR_TOKEN="${SONAR_TOKEN}" \
+                -v "$PWD:/usr/src" \
+                -w /usr/src \
+                sonarsource/sonar-scanner-cli:latest
+            '''
         }
-      }
+        }
     }
+    }
+
 
     stage('Security') {
       steps {
