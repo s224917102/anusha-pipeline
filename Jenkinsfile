@@ -321,6 +321,7 @@ fi
       }
     }
   }
+  
 
   post {
     success { echo "Pipeline succeeded - ${IMAGE_TAG} (${RELEASE_TAG})" }
