@@ -18,6 +18,7 @@ pipeline {
     ORDER_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
     FRONTEND_IMG    = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
 
+    // Local tags built in Build stage
     LOCAL_IMG_PRODUCT  = 'week09_example02_product_service:latest'
     LOCAL_IMG_ORDER    = 'week09_example02_order_service:latest'
     LOCAL_IMG_FRONTEND = 'week09_example02_frontend:latest'
@@ -40,6 +41,7 @@ pipeline {
 
   stages {
 
+    /* ========================= BUILD (rebuild images) ========================= */
     stage('Build') {
       steps {
         checkout scm
@@ -47,19 +49,35 @@ pipeline {
           env.GIT_SHA     = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
           env.IMAGE_TAG   = "${env.GIT_SHA}-${env.BUILD_NUMBER}"
           env.RELEASE_TAG = "v${env.BUILD_NUMBER}.${env.GIT_SHA}"
-          echo "[BUILD] Computed IMAGE_TAG=${env.IMAGE_TAG} | RELEASE_TAG=${env.RELEASE_TAG}"
+          echo "[BUILD] IMAGE_TAG=${env.IMAGE_TAG} | RELEASE_TAG=${env.RELEASE_TAG}"
         }
         sh '''#!/usr/bin/env bash
           set -euo pipefail
 
-          echo "[CHECK] docker=$(command -v docker || true)"
-          echo "[CHECK] docker compose=$(docker compose version | head -1 || docker-compose version | head -1 || true)"
+          PLATFORM="${DOCKER_BUILD_PLATFORM:-linux/amd64}"
+          export DOCKER_BUILDKIT=1
 
-          echo "[BUILD] Re-tag local images → Docker Hub names"
-          docker image inspect ${LOCAL_IMG_PRODUCT}  >/dev/null
-          docker image inspect ${LOCAL_IMG_ORDER}    >/dev/null
-          docker image inspect ${LOCAL_IMG_FRONTEND} >/dev/null
+          echo "[BUILD] docker=$(command -v docker || true)"
+          echo "[BUILD] docker compose=$(docker compose version | head -1 || docker-compose version | head -1 || true)"
+          echo "[BUILD] platform=${PLATFORM}"
 
+          echo "[BUILD] Build local images"
+          docker build --pull --platform="${PLATFORM}" \
+            --label org.opencontainers.image.revision="${GIT_SHA}" \
+            --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
+            -t ${LOCAL_IMG_PRODUCT} ${PRODUCT_DIR}
+
+          docker build --pull --platform="${PLATFORM}" \
+            --label org.opencontainers.image.revision="${GIT_SHA}" \
+            --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
+            -t ${LOCAL_IMG_ORDER}   ${ORDER_DIR}
+
+          docker build --pull --platform="${PLATFORM}" \
+            --label org.opencontainers.image.revision="${GIT_SHA}" \
+            --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
+            -t ${LOCAL_IMG_FRONTEND} ${FRONTEND_DIR}
+
+          echo "[BUILD] Tag images for registry"
           docker tag ${LOCAL_IMG_PRODUCT}  ${PRODUCT_IMG}:${IMAGE_TAG}
           docker tag ${LOCAL_IMG_PRODUCT}  ${PRODUCT_IMG}:latest
 
@@ -68,9 +86,12 @@ pipeline {
 
           docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:${IMAGE_TAG}
           docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:latest
+
+          echo "[BUILD] Done."
         '''
       }
     }
+    /* ======================================================================== */
 
     stage('Test') {
       options { timeout(time: 25, unit: 'MINUTES') }
@@ -198,64 +219,50 @@ pipeline {
       }
     }
 
+    /* ========================= SECURITY (local images) ======================= */
     stage('Security') {
-        steps {
-            sh '''#!/usr/bin/env bash
-            set -euo pipefail
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
 
-            echo "[SECURITY] Prepare cache & reports dirs"
-            mkdir -p security-reports .trivycache
+          echo "[SECURITY] Prepare cache & reports dirs"
+          mkdir -p security-reports .trivycache
 
-            TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
+          TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
 
-            echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
+          echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
+          docker run --rm \
+            -v "$PWD":/src -w /src \
+            -v "$PWD/.trivycache":/root/.cache/ \
+            "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
+              --format json  --output security-reports/trivy-fs.json \
+              --no-progress /src || true
+
+          docker run --rm \
+            -v "$PWD":/src -w /src \
+            -v "$PWD/.trivycache":/root/.cache/ \
+            "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
+              --format sarif --output security-reports/trivy-fs.sarif \
+              --no-progress /src || true
+
+          echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL) against **local** images"
+          IMAGES="${PRODUCT_IMG}:${IMAGE_TAG} ${ORDER_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${IMAGE_TAG}"
+
+          for IMG in $IMAGES; do
+            echo " - scanning $IMG"
             docker run --rm \
-                -v "$PWD":/src -w /src \
-                -v "$PWD/.trivycache":/root/.cache/ \
-                "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
-                --format json  --output security-reports/trivy-fs.json \
-                --no-progress /src || true
-
-            docker run --rm \
-                -v "$PWD":/src -w /src \
-                -v "$PWD/.trivycache":/root/.cache/ \
-                "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
-                --format sarif --output security-reports/trivy-fs.sarif \
-                --no-progress /src || true
-
-            echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL) against **local** images"
-            # Helper: pick first tag that exists locally (registry tag or local build tag)
-            choose_img () {
-                for t in "$@"; do
-                if docker image inspect "$t" >/dev/null 2>&1; then
-                    echo "$t"; return 0
-                fi
-                done
-                return 1
-            }
-
-            PRODUCT_TAG="$(choose_img "${PRODUCT_IMG}:${IMAGE_TAG}" "${LOCAL_IMG_PRODUCT}")"
-            ORDER_TAG="$(choose_img   "${ORDER_IMG}:${IMAGE_TAG}"   "${LOCAL_IMG_ORDER}")"
-            FRONT_TAG="$(choose_img   "${FRONTEND_IMG}:${IMAGE_TAG}" "${LOCAL_IMG_FRONTEND}")"
-
-            for IMG in "$PRODUCT_TAG" "$ORDER_TAG" "$FRONT_TAG"; do
-                [ -z "$IMG" ] && { echo "[SECURITY][WARN] No local tag found, skipping one image"; continue; }
-                echo " - scanning $IMG"
-                docker run --rm \
-                -v "$PWD/.trivycache":/root/.cache/ \
-                -v /var/run/docker.sock:/var/run/docker.sock \
-                "$TRIVY_IMG" image \
-                    --exit-code 1 \
-                    --severity HIGH,CRITICAL \
-                    --no-progress \
-                    "$IMG"
-            done
-            '''
-            archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
-        }
+              -v "$PWD/.trivycache":/root/.cache/ \
+              "$TRIVY_IMG" image \
+                --exit-code 1 \
+                --severity HIGH,CRITICAL \
+                --no-progress \
+                "$IMG"
+          done
+        '''
+        archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
+      }
     }
-
-    /* ========================================================================= */
+    /* ======================================================================== */
 
     stage('Deploy') {
       steps {
@@ -286,16 +293,21 @@ pipeline {
             compose ps || true
 
             echo "[DEPLOY] Health checks: product, order, frontend, prometheus, grafana"
+            # Product
             if ! wait_http "http://localhost:8000/health" 90; then
               echo "[DEPLOY][WARN] product /health failed; trying root /"
               wait_http "http://localhost:8000/" 30 || FAIL_PRODUCT=1
             fi
+            # Order
             if ! wait_http "http://localhost:8001/health" 90; then
               echo "[DEPLOY][WARN] order /health failed; trying root /"
               wait_http "http://localhost:8001/" 30 || FAIL_ORDER=1
             fi
+            # Frontend
             wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
+            # Prometheus
             wait_http "http://localhost:9090/" 90 || FAIL_PROM=1
+            # Grafana
             wait_http "http://localhost:3000/" 90 || FAIL_GRAF=1
 
             if [ "${FAIL_PRODUCT:-0}" -ne 0 ] || [ "${FAIL_ORDER:-0}" -ne 0 ] || \
@@ -334,10 +346,12 @@ pipeline {
             kubectl config use-context ${KUBE_CONTEXT}
             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
+            # Apply manifests (best-effort)
             for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml; do
               [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
             done
 
+            # Helper to set image + rollout and rollback on failure
             update_img () {
               app_label="$1"; new_ref="$2"
               dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
