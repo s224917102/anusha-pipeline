@@ -222,43 +222,65 @@ pipeline {
     /* ========================= SECURITY (local images) ======================= */
     stage('Security') {
       steps {
-        sh '''#!/usr/bin/env bash
-          set -euo pipefail
+        withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+          sh '''#!/usr/bin/env bash
+            set -euo pipefail
+            EXIT=0
 
-          echo "[SECURITY] Prepare cache & reports dirs"
-          mkdir -p security-reports .trivycache
+            echo "[SECURITY] Prepare cache & reports dirs"
+            mkdir -p security-reports .trivycache
+            TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
 
-          TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
+            # Login so Trivy can pull if needed (will no-op on local scans)
+            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin || true
 
-          echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
-          docker run --rm \
-            -v "$PWD":/src -w /src \
-            -v "$PWD/.trivycache":/root/.cache/ \
-            "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
-              --format json  --output security-reports/trivy-fs.json \
-              --no-progress /src || true
-
-          docker run --rm \
-            -v "$PWD":/src -w /src \
-            -v "$PWD/.trivycache":/root/.cache/ \
-            "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
-              --format sarif --output security-reports/trivy-fs.sarif \
-              --no-progress /src || true
-
-          echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL) against **local** images"
-          IMAGES="${PRODUCT_IMG}:${IMAGE_TAG} ${ORDER_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${IMAGE_TAG}"
-
-          for IMG in $IMAGES; do
-            echo " - scanning $IMG"
+            echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
             docker run --rm \
+              -v "$PWD":/src -w /src \
               -v "$PWD/.trivycache":/root/.cache/ \
-              "$TRIVY_IMG" image \
-                --exit-code 1 \
-                --severity HIGH,CRITICAL \
-                --no-progress \
-                "$IMG"
-          done
-        '''
+              "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
+                --format json  --output security-reports/trivy-fs.json \
+                --no-progress /src || true
+
+            docker run --rm \
+              -v "$PWD":/src -w /src \
+              -v "$PWD/.trivycache":/root/.cache/ \
+              "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
+                --format sarif --output security-reports/trivy-fs.sarif \
+                --no-progress /src || true
+
+            echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL) against local images"
+            IMAGES="${PRODUCT_IMG}:${IMAGE_TAG} ${ORDER_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${IMAGE_TAG}"
+
+            for IMG in $IMAGES; do
+              echo " - scanning $IMG"
+              if [ -S /var/run/docker.sock ]; then
+                docker run --rm \
+                  -v /var/run/docker.sock:/var/run/docker.sock \
+                  -v "$PWD/.trivycache":/root/.cache/ \
+                  "$TRIVY_IMG" image \
+                    --exit-code 1 \
+                    --severity HIGH,CRITICAL \
+                    --no-progress \
+                    "$IMG" || EXIT=$?
+              else
+                TMP="/tmp/$(echo "$IMG" | tr '/:' '__').tar"
+                docker save -o "$TMP" "$IMG"
+                docker run --rm \
+                  -v "$TMP:/image.tar:ro" \
+                  -v "$PWD/.trivycache":/root/.cache/ \
+                  "$TRIVY_IMG" image \
+                    --input /image.tar \
+                    --exit-code 1 \
+                    --severity HIGH,CRITICAL \
+                    --no-progress || EXIT=$?
+                rm -f "$TMP"
+              fi
+            done
+
+            exit ${EXIT:-0}
+          '''
+        }
         archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
       }
     }
