@@ -349,30 +349,34 @@ stage('Deploy') {
             done
 
             # Wait for LoadBalancer IPs
-            echo "[RELEASE] Waiting for Product, Order, Frontend LoadBalancer IPs (up to 5 minutes)..."
-            PRODUCT_IP=""; ORDER_IP=""; FRONTEND_IP=""
+            echo "[RELEASE] Waiting for Product, Order, Frontend, Prometheus, Grafana LoadBalancer IPs (up to 5 minutes)..."
+            PRODUCT_IP=""; ORDER_IP=""; FRONTEND_IP=""; PROM_IP=""; GRAF_IP=""
             for i in $(seq 1 60); do
               echo "Attempt $i/60..."
-              PRODUCT_IP=$(kubectl get svc product-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-              ORDER_IP=$(kubectl get svc order-service   -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-              FRONTEND_IP=$(kubectl get svc frontend     -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+              PRODUCT_IP=$(kubectl get svc product-service   -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+              ORDER_IP=$(kubectl get svc order-service       -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+              FRONTEND_IP=$(kubectl get svc frontend         -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+              PROM_IP=$(kubectl get svc prometheus-service   -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+              GRAF_IP=$(kubectl get svc grafana-service      -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
 
-              if [[ -n "$PRODUCT_IP" && -n "$ORDER_IP" && -n "$FRONTEND_IP" ]]; then
+              if [[ -n "$PRODUCT_IP" && -n "$ORDER_IP" && -n "$FRONTEND_IP" && -n "$PROM_IP" && -n "$GRAF_IP" ]]; then
                 echo "All LB IPs assigned!"
                 break
               fi
               sleep 5
             done
 
-            if [[ -z "$PRODUCT_IP" || -z "$ORDER_IP" || -z "$FRONTEND_IP" ]]; then
+            if [[ -z "$PRODUCT_IP" || -z "$ORDER_IP" || -z "$FRONTEND_IP" || -z "$PROM_IP" || -z "$GRAF_IP" ]]; then
               echo "[RELEASE][ERROR] One or more LB IPs not assigned after timeout."
               kubectl get svc -n ${NAMESPACE} || true
               exit 1
             fi
 
-            echo "[RELEASE] Product Service IP:  $PRODUCT_IP"
-            echo "[RELEASE] Order Service IP:    $ORDER_IP"
-            echo "[RELEASE] Frontend Service IP: $FRONTEND_IP"
+            echo "[RELEASE] Product Service IP:   $PRODUCT_IP"
+            echo "[RELEASE] Order Service IP:     $ORDER_IP"
+            echo "[RELEASE] Frontend Service IP:  $FRONTEND_IP"
+            echo "[RELEASE] Prometheus Service IP:$PROM_IP"
+            echo "[RELEASE] Grafana Service IP:   $GRAF_IP"
 
             # Rollout checks with rollback if needed
             update_img () {
@@ -391,6 +395,8 @@ stage('Deploy') {
             update_img product-service
             update_img order-service
             update_img frontend
+            update_img prometheus-server
+            update_img grafana
 
             echo "[RELEASE] Kubernetes release complete."
           '''
