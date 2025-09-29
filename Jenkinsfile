@@ -284,14 +284,13 @@ pipeline {
             done
           }
 
-          echo "[DEPLOY] Staging with docker-compose (no rebuilds)"
+          echo "[DEPLOY] Starting containers with docker-compose (local images)"
           if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
             compose up -d --remove-orphans
             compose ps || true
 
             echo "[DEPLOY] Checking service URLs..."
             FAIL=0
-
             wait_url "http://localhost:8000" 90 || FAIL=1
             wait_url "http://localhost:8001" 90 || FAIL=1
             wait_url "http://localhost:3000" 90 || FAIL=1
@@ -299,20 +298,21 @@ pipeline {
             wait_url "http://localhost:9090" 90 || FAIL=1
 
             if [ $FAIL -ne 0 ]; then
-              echo "[DEPLOY][ERROR] One or more service URLs unavailable. Rolling back to :latest."
+              echo "[DEPLOY][ERROR] One or more services unavailable. Rolling back to :latest."
               mkdir -p reports
               compose logs --no-color > reports/compose-failed.log || true
-              COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d || true
+              COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d --force-recreate || true
               exit 1
             fi
 
-            echo "[DEPLOY] All service URLs responded successfully."
+            echo "[DEPLOY] ✅ All service URLs responded successfully."
           else
             echo "[DEPLOY][WARN] No docker-compose file present. Skipping staging deploy."
           fi
         '''
       }
     }
+
 
     stage('Release') {
       steps {
