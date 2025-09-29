@@ -5,13 +5,13 @@ WORKDIR /code
 # Update system packages for security fixes
 RUN apk update && apk upgrade
 
-# Install build dependencies
-RUN apk add --no-cache gcc musl-dev linux-headers postgresql-dev
+# Install build dependencies for psycopg2 and other packages
+RUN apk add --no-cache gcc musl-dev linux-headers postgresql-dev libffi-dev
 
 COPY requirements.txt .
 
-# Upgrade pip and install requirements
-RUN pip install --no-cache-dir --upgrade pip
+# Upgrade pip, setuptools, and wheel before installing your packages
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app /code/app
