@@ -288,7 +288,7 @@ stage('Deploy') {
           if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
             compose up -d --remove-orphans
             compose ps || true
-            
+
             # Frontend
             wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
             # Prometheus
@@ -314,54 +314,61 @@ stage('Deploy') {
     }
 
     stage('Release') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+        steps { 
+            withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
             sh '''#!/usr/bin/env bash
-            set -euo pipefail
-            echo "[RELEASE] Login & push images"
-            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+                set -euo pipefail
+                echo "[RELEASE] Login & push images"
+                echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
 
-            for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-            docker push $img:${IMAGE_TAG}
-            docker push $img:latest
-            docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
-            docker push $img:${RELEASE_TAG}
-            done
+                # Push all tagged images
+                for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
+                docker push $img:${IMAGE_TAG}
+                docker push $img:latest
+                docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
+                docker push $img:${RELEASE_TAG}
+                done
 
-            echo "[RELEASE] Deploy to local Kubernetes (${KUBE_CONTEXT})"
-            kubectl config use-context ${KUBE_CONTEXT}
-            kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                echo "[RELEASE] Deploy to local Kubernetes (${KUBE_CONTEXT})"
+                kubectl config use-context ${KUBE_CONTEXT}
+                kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-            # Apply manifests (best-effort)
-            for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml; do
-            [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
-            done
+                # Replace 'latest' with actual IMAGE_TAG for this release
+                echo "[RELEASE] Rewriting manifests with IMAGE_TAG=${IMAGE_TAG}"
+                mkdir -p tmp_manifests
+                for f in ${K8S_DIR}/*.yaml; do
+                sed "s|:latest|:${IMAGE_TAG}|g" "$f" > tmp_manifests/$(basename $f)
+                done
 
-            # Helper to set image + rollout and rollback on failure
-            update_img () {
-            app_label="$1"; new_ref="$2"
-            dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-            [ -z "$dep" ] && { echo "[RELEASE][WARN] No deployment for app=${app_label}"; return 0; }
-            container="$(kubectl get deploy "$dep" -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].name}')"
-            echo "[RELEASE] set image deploy/${dep} ${container}=${new_ref}"
-            kubectl set image deploy/"$dep" "${container}=${new_ref}" -n ${NAMESPACE}
-            if ! kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=180s; then
-                echo "[RELEASE][ERROR] Rollout failed for ${dep}. Rolling back…"
-                kubectl rollout undo deploy/"$dep" -n ${NAMESPACE} || true
-                kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=120s || true
-                exit 1
-            fi
-            }
+                # Apply updated manifests
+                kubectl apply -n ${NAMESPACE} -f tmp_manifests/
 
-            update_img product-service ${PRODUCT_IMG}:${IMAGE_TAG}
-            update_img order-service   ${ORDER_IMG}:${IMAGE_TAG}
-            update_img frontend        ${FRONTEND_IMG}:${IMAGE_TAG}
+                # Helper to set image + rollout and rollback on failure
+                update_img () {
+                app_label="$1"; new_ref="$2"
+                dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+                [ -z "$dep" ] && { echo "[RELEASE][WARN] No deployment for app=${app_label}"; return 0; }
+                container="$(kubectl get deploy "$dep" -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].name}')"
+                echo "[RELEASE] set image deploy/${dep} ${container}=${new_ref}"
+                kubectl set image deploy/"$dep" "${container}=${new_ref}" -n ${NAMESPACE}
+                if ! kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=300s; then
+                    echo "[RELEASE][ERROR] Rollout failed for ${dep}. Rolling back…"
+                    kubectl rollout undo deploy/"$dep" -n ${NAMESPACE} || true
+                    kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=120s || true
+                    exit 1
+                fi
+                }
 
-            echo "[RELEASE] Kubernetes release complete."
+                update_img product-service ${PRODUCT_IMG}:${IMAGE_TAG}
+                update_img order-service   ${ORDER_IMG}:${IMAGE_TAG}
+                update_img frontend        ${FRONTEND_IMG}:${IMAGE_TAG}
+
+                echo "[RELEASE] Kubernetes release complete."
             '''
+            }
         }
-      }
     }
+
 
     stage('Monitoring') {
       steps {
