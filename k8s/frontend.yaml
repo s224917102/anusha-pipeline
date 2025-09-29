@@ -21,7 +21,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: frontend-container
-          image: docker.io/s224917102/frontend:latest
+          image: docker.io/s224917102/frontend:${IMAGE_TAG}
           imagePullPolicy: Always
           ports:
             - containerPort: 8080          # non-privileged in-container port
