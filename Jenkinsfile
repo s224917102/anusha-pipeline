@@ -104,6 +104,11 @@ pipeline {
             vdir="$1"; shift
             python3 -m venv "$vdir"
             . "$vdir/bin/activate"
+            
+
+            export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
+            pip install psycopg2-binary==2.9.9
+
             python -m pip install -U pip wheel >/dev/null
             [ $# -gt 0 ] && python -m pip install "$@" >/dev/null || true
             deactivate
