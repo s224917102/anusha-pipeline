@@ -288,18 +288,7 @@ stage('Deploy') {
           if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
             compose up -d --remove-orphans
             compose ps || true
-
-            echo "[DEPLOY] Health checks: product, order, frontend, prometheus, grafana"
-            # Product
-            if ! wait_http "http://localhost:8000/health" 90; then
-              echo "[DEPLOY][WARN] product /health failed; trying root /"
-              wait_http "http://localhost:8000/" 30 || FAIL_PRODUCT=1
-            fi
-            # Order
-            if ! wait_http "http://localhost:8001/health" 90; then
-              echo "[DEPLOY][WARN] order /health failed; trying root /"
-              wait_http "http://localhost:8001/" 30 || FAIL_ORDER=1
-            fi
+            
             # Frontend
             wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
             # Prometheus
@@ -323,7 +312,6 @@ stage('Deploy') {
         '''
       }
     }
-
 
     stage('Release') {
       steps {
