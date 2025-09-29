@@ -262,56 +262,57 @@ pipeline {
     /* ======================================================================== */
 
     stage('Deploy') {
-      steps {
-        sh '''#!/usr/bin/env bash
-          set -euo pipefail
+        steps {
+            sh '''#!/usr/bin/env bash
+            set -euo pipefail
 
-          compose () {
-            if docker compose version >/dev/null 2>&1; then
-              docker compose "$@"
+            compose () {
+                if docker compose version >/dev/null 2>&1; then
+                docker compose "$@"
+                else
+                docker-compose "$@"
+                fi
+            }
+
+            wait_url () {
+                url="$1"; tries="${2:-90}"
+                i=0
+                until curl -fsS "$url" >/dev/null 2>&1; do
+                i=$((i+1))
+                [ $i -ge $tries ] && return 1
+                sleep 2
+                done
+            }
+
+            echo "[DEPLOY] Starting containers with docker-compose (local images)"
+            if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
+                compose up -d --remove-orphans
+                compose ps || true
+
+                echo "[DEPLOY] Checking service URLs..."
+                FAIL=0
+                wait_url "http://localhost:8000/docs" 90 || FAIL=1
+                wait_url "http://localhost:8001/docs" 90 || FAIL=1
+                wait_url "http://localhost:3000/login" 180 || FAIL=1
+                wait_url "http://localhost:3001" 90 || FAIL=1
+                wait_url "http://localhost:9090/-/ready" 180 || FAIL=1
+
+                if [ $FAIL -ne 0 ]; then
+                echo "[DEPLOY][ERROR] One or more services unavailable. Rolling back to :latest."
+                mkdir -p reports
+                compose logs --no-color > reports/compose-failed.log || true
+                COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d --force-recreate || true
+                exit 1
+                fi
+
+                echo "[DEPLOY] ✅ All service URLs responded successfully."
             else
-              docker-compose "$@"
+                echo "[DEPLOY][WARN] No docker-compose file present. Skipping staging deploy."
             fi
-          }
-
-          wait_url () {
-            url="$1"; tries="${2:-90}"
-            i=0
-            until curl -fsS "$url" >/dev/null 2>&1; do
-              i=$((i+1))
-              [ $i -ge $tries ] && return 1
-              sleep 2
-            done
-          }
-
-          echo "[DEPLOY] Starting containers with docker-compose (local images)"
-          if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
-            compose up -d --remove-orphans
-            compose ps || true
-
-            echo "[DEPLOY] Checking service URLs..."
-            FAIL=0
-            wait_url "http://localhost:8000" 90 || FAIL=1
-            wait_url "http://localhost:8001" 90 || FAIL=1
-            wait_url "http://localhost:3000" 90 || FAIL=1
-            wait_url "http://localhost:3001" 90 || FAIL=1
-            wait_url "http://localhost:9090" 90 || FAIL=1
-
-            if [ $FAIL -ne 0 ]; then
-              echo "[DEPLOY][ERROR] One or more services unavailable. Rolling back to :latest."
-              mkdir -p reports
-              compose logs --no-color > reports/compose-failed.log || true
-              COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d --force-recreate || true
-              exit 1
-            fi
-
-            echo "[DEPLOY] ✅ All service URLs responded successfully."
-          else
-            echo "[DEPLOY][WARN] No docker-compose file present. Skipping staging deploy."
-          fi
-        '''
-      }
+            '''
+        }
     }
+
 
 
     stage('Release') {
