@@ -26,7 +26,7 @@ spec:
           image: docker.io/s224917102/order_service:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 8080
+            - containerPort: 8000
           env:
             - name: POSTGRES_HOST
               value: order-db-service-w09-aks
@@ -59,18 +59,17 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-
           readinessProbe:
             httpGet:
               path: /health
-              port: 8080
+              port: 8000
             initialDelaySeconds: 25
             periodSeconds: 5
             failureThreshold: 10
           livenessProbe:
             httpGet:
               path: /health
-              port: 8080
+              port: 8000
             initialDelaySeconds: 50
             periodSeconds: 10
             failureThreshold: 5
