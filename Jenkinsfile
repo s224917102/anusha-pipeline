@@ -270,66 +270,64 @@ pipeline {
      
     stage('Deploy') {
       steps {
-        dir('anusha-pipeline') {   // 👈 ensure we’re in correct folder
-            sh '''#!/usr/bin/env bash
-            set -euo pipefail
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
 
-            compose () {
-                if docker compose version >/dev/null 2>&1; then
-                docker compose "$@"
-                else
-                docker-compose "$@"
-                fi
-            }
-
-            wait_http () {
-                url="$1"; tries="${2:-90}"
-                i=0
-                until curl -fsS "$url" >/dev/null 2>&1; do
-                i=$((i+1))
-                [ $i -ge $tries ] && return 1
-                sleep 1
-                done
-            }
-
-            echo "[DEPLOY] Staging with docker-compose (no rebuilds)"
-            if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
-                compose up -d --remove-orphans
-                compose ps || true
-
-                echo "[DEPLOY] Health checks: product, order, frontend, prometheus, grafana"
-                # Product
-                if ! wait_http "http://localhost:8000/health" 90; then
-                echo "[DEPLOY][WARN] product /health failed; trying root /"
-                wait_http "http://localhost:8000/" 30 || FAIL_PRODUCT=1
-                fi
-                # Order
-                if ! wait_http "http://localhost:8001/health" 90; then
-                echo "[DEPLOY][WARN] order /health failed; trying root /"
-                wait_http "http://localhost:8001/" 30 || FAIL_ORDER=1
-                fi
-                # Frontend
-                wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
-                # Prometheus
-                wait_http "http://localhost:9090/" 90 || FAIL_PROM=1
-                # Grafana
-                wait_http "http://localhost:3000/" 90 || FAIL_GRAF=1
-
-                if [ "${FAIL_PRODUCT:-0}" -ne 0 ] || [ "${FAIL_ORDER:-0}" -ne 0 ] || \
-                [ "${FAIL_FRONTEND:-0}" -ne 0 ] || [ "${FAIL_PROM:-0}" -ne 0 ] || \
-                [ "${FAIL_GRAF:-0}" -ne 0 ]; then
-                echo "[DEPLOY][ERROR] Staging health checks failed. Attempting rollback to :latest."
-                compose logs --no-color > reports/compose-failed.log || true
-                COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d || true
-                exit 1
-                fi
-
-                echo "[DEPLOY] Staging environment is healthy."
+          compose () {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
             else
-                echo "[DEPLOY][WARN] No docker-compose file present. Skipping staging deploy."
+              docker-compose "$@"
             fi
-            '''
-        }
+          }
+
+          wait_http () {
+            url="$1"; tries="${2:-90}"
+            i=0
+            until curl -fsS "$url" >/dev/null 2>&1; do
+              i=$((i+1))
+              [ $i -ge $tries ] && return 1
+              sleep 1
+            done
+          }
+
+          echo "[DEPLOY] Staging with docker-compose (no rebuilds)"
+          if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
+            compose up -d --remove-orphans
+            compose ps || true
+
+            echo "[DEPLOY] Health checks: product, order, frontend, prometheus, grafana"
+            # Product
+            if ! wait_http "http://localhost:8000/health" 90; then
+              echo "[DEPLOY][WARN] product /health failed; trying root /"
+              wait_http "http://localhost:8000/" 30 || FAIL_PRODUCT=1
+            fi
+            # Order
+            if ! wait_http "http://localhost:8001/health" 90; then
+              echo "[DEPLOY][WARN] order /health failed; trying root /"
+              wait_http "http://localhost:8001/" 30 || FAIL_ORDER=1
+            fi
+            # Frontend
+            wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
+            # Prometheus
+            wait_http "http://localhost:9090/" 90 || FAIL_PROM=1
+            # Grafana
+            wait_http "http://localhost:3000/" 90 || FAIL_GRAF=1
+
+            if [ "${FAIL_PRODUCT:-0}" -ne 0 ] || [ "${FAIL_ORDER:-0}" -ne 0 ] || \
+               [ "${FAIL_FRONTEND:-0}" -ne 0 ] || [ "${FAIL_PROM:-0}" -ne 0 ] || \
+               [ "${FAIL_GRAF:-0}" -ne 0 ]; then
+              echo "[DEPLOY][ERROR] Staging health checks failed. Attempting rollback to :latest."
+              compose logs --no-color > reports/compose-failed.log || true
+              COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d || true
+              exit 1
+            fi
+
+            echo "[DEPLOY] Staging environment is healthy."
+          else
+            echo "[DEPLOY][WARN] No docker-compose file present. Skipping staging deploy."
+          fi
+        '''
       }
     }
 
