@@ -1,4 +1,4 @@
-FROM nginx:1.27-alpine3.22
+FROM nginx:alpine
 
 # Update system packages to get security fixes
 RUN apk update && apk upgrade
