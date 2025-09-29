@@ -314,97 +314,78 @@ stage('Deploy') {
     }
 
     stage('Release') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-          sh '''#!/usr/bin/env bash
-            set -euo pipefail
+        steps {
+            withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+            sh '''#!/usr/bin/env bash
+                set -euo pipefail
 
-            echo "[RELEASE] Login & push images"
-            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+                echo "[RELEASE] Login & push images"
+                echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
 
-            for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-              docker push $img:${IMAGE_TAG}
-              docker push $img:latest
-              docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
-              docker push $img:${RELEASE_TAG}
-            done
+                for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
+                docker push $img:${IMAGE_TAG}
+                docker push $img:latest
+                docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
+                docker push $img:${RELEASE_TAG}
+                done
 
-            echo "[RELEASE] Deploy to local Kubernetes (${KUBE_CONTEXT})"
-            kubectl config use-context ${KUBE_CONTEXT}
-            kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                echo "[RELEASE] Deploy to local Kubernetes (${KUBE_CONTEXT})"
+                kubectl config use-context ${KUBE_CONTEXT}
+                kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-            echo "[RELEASE] Apply infra (configmaps, secrets, databases)"
-            for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
-              [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f"
-            done
+                echo "[RELEASE] Apply infra (configmaps, secrets, databases)"
+                for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
+                [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                done
 
-            echo "[RELEASE] Apply microservices (product, order, frontend)"
-            for f in product-service.yaml order-service.yaml frontend.yaml; do
-              [ -f "${K8S_DIR}/$f" ] && sed "s|:latest|:${IMAGE_TAG}|g" "${K8S_DIR}/$f" | kubectl apply -n ${NAMESPACE} -f -
-            done
+                echo "[RELEASE] Apply microservices (product, order, frontend)"
+                for f in product-service.yaml order-service.yaml frontend.yaml; do
+                [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                done
 
-            echo "[RELEASE] Apply monitoring (Prometheus + Grafana)"
-            for f in prometheus-configmap.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
-              [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
-            done
+                echo "[RELEASE] Apply monitoring (Prometheus + Grafana)"
+                for f in prometheus-config.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
+                [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                done
 
-            # Wait for LoadBalancer IPs
-            echo "[RELEASE] Waiting for Product, Order, Frontend, Prometheus, Grafana LoadBalancer IPs (up to 5 minutes)..."
-            PRODUCT_IP=""; ORDER_IP=""; FRONTEND_IP=""; PROM_IP=""; GRAF_IP=""
-            for i in $(seq 1 60); do
-              echo "Attempt $i/60..."
-              PRODUCT_IP=$(kubectl get svc product-service   -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-              ORDER_IP=$(kubectl get svc order-service       -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-              FRONTEND_IP=$(kubectl get svc frontend         -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-              PROM_IP=$(kubectl get svc prometheus-service   -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-              GRAF_IP=$(kubectl get svc grafana-service      -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+                echo "[RELEASE] Waiting for LoadBalancer IPs (Product, Order, Frontend, Prometheus, Grafana)"
+                get_svc_address () {
+                svc="$1"; ns="$2"
+                ip=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+                host=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+                port=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
 
-              if [[ -n "$PRODUCT_IP" && -n "$ORDER_IP" && -n "$FRONTEND_IP" && -n "$PROM_IP" && -n "$GRAF_IP" ]]; then
-                echo "All LB IPs assigned!"
-                break
-              fi
-              sleep 5
-            done
+                if [ -n "$ip" ]; then
+                    echo "$ip"
+                elif [ -n "$host" ]; then
+                    echo "$host"
+                elif [ -n "$port" ]; then
+                    echo "localhost:$port"
+                else
+                    echo ""
+                fi
+                }
 
-            if [[ -z "$PRODUCT_IP" || -z "$ORDER_IP" || -z "$FRONTEND_IP" || -z "$PROM_IP" || -z "$GRAF_IP" ]]; then
-              echo "[RELEASE][ERROR] One or more LB IPs not assigned after timeout."
-              kubectl get svc -n ${NAMESPACE} || true
-              exit 1
-            fi
+                SERVICES=(product-service order-service frontend prometheus-service grafana-service)
+                for svc in "${SERVICES[@]}"; do
+                echo "Waiting for $svc address..."
+                for i in $(seq 1 60); do
+                    addr=$(get_svc_address "$svc" ${NAMESPACE})
+                    if [ -n "$addr" ]; then
+                    echo "[RELEASE] $svc available at $addr"
+                    break
+                    fi
+                    echo "Attempt $i: still pending..."
+                    sleep 5
+                done
+                done
 
-            echo "[RELEASE] Product Service IP:   $PRODUCT_IP"
-            echo "[RELEASE] Order Service IP:     $ORDER_IP"
-            echo "[RELEASE] Frontend Service IP:  $FRONTEND_IP"
-            echo "[RELEASE] Prometheus Service IP:$PROM_IP"
-            echo "[RELEASE] Grafana Service IP:   $GRAF_IP"
-
-            # Rollout checks with rollback if needed
-            update_img () {
-              app_label="$1"
-              dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-              [ -z "$dep" ] && { echo "[RELEASE][WARN] No deployment for app=${app_label}"; return 0; }
-              echo "[RELEASE] Checking rollout for $dep..."
-              if ! kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=300s; then
-                echo "[RELEASE][ERROR] Rollout failed for ${dep}. Rolling back…"
-                kubectl rollout undo deploy/"$dep" -n ${NAMESPACE} || true
-                kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=120s || true
-                exit 1
-              fi
+                echo "[RELEASE] Kubernetes release complete."
+                kubectl get svc -n ${NAMESPACE}
+            '''
             }
-
-            update_img product-service
-            update_img order-service
-            update_img frontend
-            update_img prometheus-server
-            update_img grafana
-
-            echo "[RELEASE] Kubernetes release complete."
-          '''
         }
-      }
     }
-
-
 
     stage('Monitoring') {
       steps {
