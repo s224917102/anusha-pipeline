@@ -14,6 +14,7 @@ pipeline {
     DOCKERHUB_CREDS = 'dockerhub-s224917102'
     REGISTRY        = 'docker.io'
 
+
     PRODUCT_IMG     = "${REGISTRY}/${DOCKERHUB_NS}/product_service"
     ORDER_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
     FRONTEND_IMG    = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
