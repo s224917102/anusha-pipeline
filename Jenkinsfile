@@ -241,6 +241,7 @@ pipeline {
     }
 
     /* ========================= SECURITY ========================= */
+    /* ========================= SECURITY ========================= */
     stage('Security') {
       steps {
         sh '''#!/usr/bin/env bash
@@ -249,14 +250,14 @@ pipeline {
           TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
 
           echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
-          docker run --rm \
+          docker run --rm --platform="${DOCKER_DEFAULT_PLATFORM}" \
             -v "$PWD":/src -w /src \
             -v "$PWD/.trivycache":/root/.cache/ \
             "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
               --format json  --output security-reports/trivy-fs.json \
               --no-progress /src || true
 
-          docker run --rm \
+          docker run --rm --platform="${DOCKER_DEFAULT_PLATFORM}" \
             -v "$PWD":/src -w /src \
             -v "$PWD/.trivycache":/root/.cache/ \
             "$TRIVY_IMG" fs --scanners vuln,misconfig,secret \
@@ -267,7 +268,7 @@ pipeline {
           IMAGES="${PRODUCT_IMG}:${IMAGE_TAG} ${ORDER_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${IMAGE_TAG}"
           for IMG in $IMAGES; do
             echo " - scanning $IMG"
-            docker run --rm \
+            docker run --rm --platform="${DOCKER_DEFAULT_PLATFORM}" \
               -v "$PWD/.trivycache":/root/.cache/ \
               "$TRIVY_IMG" image \
                 --exit-code 1 \
@@ -279,6 +280,7 @@ pipeline {
         archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
       }
     }
+
 
     /* ========================= DEPLOY (docker-compose staging) ========================= */
     stage('Deploy') {
@@ -355,4 +357,55 @@ pipeline {
               [ -z "$dep" ] && { echo "[RELEASE][WARN] No deployment for app=${app_label}"; return 0; }
               container="$(kubectl get deploy "$dep" -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].name}')"
               echo "[RELEASE] set image deploy/${dep} ${container}=${new_ref}"
-              kubectl set image deploy/"$dep" "${container}=${
+              kubectl set image deploy/"$dep" "${container}=${new_ref}" -n ${NAMESPACE}
+              if ! kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=180s; then
+                echo "[RELEASE][ERROR] Rollout failed for ${dep}. Rolling back…"
+                kubectl rollout undo deploy/"$dep" -n ${NAMESPACE} || true
+                kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=120s || true
+                exit 1
+              fi
+            }
+
+            update_img product-service ${PRODUCT_IMG}:${IMAGE_TAG}
+            update_img order-service   ${ORDER_IMG}:${IMAGE_TAG}
+            update_img frontend        ${FRONTEND_IMG}:${IMAGE_TAG}
+
+            echo "[RELEASE] Kubernetes release complete."
+          '''
+        }
+      }
+    }
+
+    /* ========================= MONITORING ========================= */
+    stage('Monitoring') {
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
+          echo "[MONITOR] Quick health checks via port-forward"
+          PRODUCT_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=product-service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          ORDER_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=order-service   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+          if [ -n "$PRODUCT_SVC" ]; then
+            kubectl port-forward svc/${PRODUCT_SVC} 18000:8000 -n ${NAMESPACE} >/tmp/pf_prod.log 2>&1 &
+            PF1=$!; sleep 3
+            curl -fsS http://localhost:18000/health || (echo "Product /health failed" && kill $PF1 || true && exit 1)
+            kill $PF1 || true
+          fi
+
+          if [ -n "$ORDER_SVC" ]; then
+            kubectl port-forward svc/${ORDER_SVC} 18001:8001 -n ${NAMESPACE} >/tmp/pf_order.log 2>&1 &
+            PF2=$!; sleep 3
+            curl -fsS http://localhost:18001/health || (echo "Order /health failed" && kill $PF2 || true && exit 1)
+            kill $PF2 || true
+          fi
+        '''
+      }
+    }
+  }
+
+  post {
+    success { echo "Pipeline succeeded - ${IMAGE_TAG} (${RELEASE_TAG})" }
+    failure { echo "Pipeline failed - see logs." }
+    always  { echo "Pipeline completed." }
+  }
+}
