@@ -8,7 +8,7 @@ pipeline {
   }
 
   environment {
-    PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/opt/python@3.11/bin"
 
     DOCKERHUB_NS    = 's224917102'
     DOCKERHUB_CREDS = 'dockerhub-s224917102'
