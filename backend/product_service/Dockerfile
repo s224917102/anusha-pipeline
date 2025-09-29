@@ -1,14 +1,18 @@
-FROM python:3.10-alpine
+FROM python:3.10-alpine3.22
 
 WORKDIR /code
 
-# Install required system dependencies
-RUN apk add --no-cache gcc musl-dev linux-headers
+# Update system packages for security fixes
+RUN apk update && apk upgrade
+
+# Install build dependencies
+RUN apk add --no-cache gcc musl-dev linux-headers postgresql-dev
 
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Upgrade pip and install requirements
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app /code/app
 
