@@ -202,6 +202,7 @@ pipeline {
 
     /* ========================= SECURITY (local images) ======================= */
     /* ========================= SECURITY (local images) ======================= */
+    /* ========================= SECURITY (local images) ======================= */
     stage('Security') {
       steps {
         withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
@@ -213,8 +214,13 @@ pipeline {
             mkdir -p security-reports .trivycache
             TRIVY_IMG="aquasec/trivy:${TRIVY_VER}"
 
-            # Login so Trivy can pull if needed (will no-op on local scans)
+            # Login so Trivy can pull if needed
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin || true
+
+            echo "[SECURITY] Rebuild local images for scanning"
+            docker build -t ${LOCAL_IMG_PRODUCT} ${PRODUCT_DIR}
+            docker build -t ${LOCAL_IMG_ORDER}   ${ORDER_DIR}
+            docker build -t ${LOCAL_IMG_FRONTEND} ${FRONTEND_DIR}
 
             echo "[SECURITY] FS scan (advisory) → JSON & SARIF"
             docker run --rm \
@@ -236,28 +242,14 @@ pipeline {
 
             for IMG in $IMAGES; do
               echo " - scanning $IMG"
-              if [ -S /var/run/docker.sock ]; then
-                docker run --rm \
-                  -v /var/run/docker.sock:/var/run/docker.sock \
-                  -v "$PWD/.trivycache":/root/.cache/ \
-                  "$TRIVY_IMG" image \
-                    --exit-code 1 \
-                    --severity HIGH,CRITICAL \
-                    --no-progress \
-                    "$IMG" || EXIT=$?
-              else
-                TMP="/tmp/$(echo "$IMG" | tr '/:' '__').tar"
-                docker save -o "$TMP" "$IMG"
-                docker run --rm \
-                  -v "$TMP:/image.tar:ro" \
-                  -v "$PWD/.trivycache":/root/.cache/ \
-                  "$TRIVY_IMG" image \
-                    --input /image.tar \
-                    --exit-code 1 \
-                    --severity HIGH,CRITICAL \
-                    --no-progress || EXIT=$?
-                rm -f "$TMP"
-              fi
+              docker run --rm \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                -v "$PWD/.trivycache":/root/.cache/ \
+                "$TRIVY_IMG" image \
+                  --exit-code 1 \
+                  --severity HIGH,CRITICAL \
+                  --no-progress \
+                  "$IMG" || EXIT=$?
             done
 
             exit ${EXIT:-0}
