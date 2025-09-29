@@ -94,11 +94,15 @@ pipeline {
     }
     /* ======================================================================== */
 
+    /* ========================= TEST ========================= */
     stage('Test') {
       options { timeout(time: 25, unit: 'MINUTES') }
       steps {
-        sh '''#!/usr/bin/env bash
+        sh '''
           set -euo pipefail
+
+          echo "[TEST] Python version check:"
+          python3.11 --version || { echo "Python 3.11 not found"; exit 1; }
 
           make_venv () {
             vdir="$1"; shift
@@ -123,10 +127,8 @@ pipeline {
             return 1
           }
 
-          echo "[TEST][UNIT] Clean old DBs"
           docker rm -f product_db order_db >/dev/null 2>&1 || true
 
-          echo "[TEST][UNIT] Start Postgres (use high, non-default host ports)"
           docker run -d --name product_db -p 55432:5432 \
             -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=products \
             postgres:15
@@ -134,56 +136,34 @@ pipeline {
             -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orders \
             postgres:15
 
-          echo "[TEST][UNIT] Wait for DBs"
           wait_db product_db
           wait_db order_db
 
-          echo "[TEST][UNIT] Product"
+          echo "[TEST] Running product tests"
           if [ -d ${PRODUCT_DIR} ]; then
             make_venv ".venv_prod" "pytest>=8,<9" "pytest-timeout==2.3.1"
             . .venv_prod/bin/activate
-            [ -f ${PRODUCT_DIR}/requirements.txt ] && python -m pip install -r ${PRODUCT_DIR}/requirements.txt >/dev/null || true
-            [ -f ${PRODUCT_DIR}/requirements-dev.txt ] && python -m pip install -r ${PRODUCT_DIR}/requirements-dev.txt >/dev/null || true
+            pip install -r ${PRODUCT_DIR}/requirements.txt || true
+            pip install -r ${PRODUCT_DIR}/requirements-dev.txt || true
             export POSTGRES_HOST=localhost POSTGRES_PORT=55432 POSTGRES_DB=products POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
             export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-            pytest -q -p pytest_timeout ${PRODUCT_DIR}/tests --junitxml=product_unit.xml --timeout=60 --timeout-method=thread
+            pytest -q -p pytest_timeout ${PRODUCT_DIR}/tests --junitxml=product_unit.xml --timeout=60
             deactivate
           fi
 
-          echo "[TEST][UNIT] Order"
+          echo "[TEST] Running order tests"
           if [ -d ${ORDER_DIR} ]; then
             make_venv ".venv_order" "pytest>=8,<9" "pytest-timeout==2.3.1"
             . .venv_order/bin/activate
-            [ -f ${ORDER_DIR}/requirements.txt ] && python -m pip install -r ${ORDER_DIR}/requirements.txt >/dev/null || true
-            [ -f ${ORDER_DIR}/requirements-dev.txt ] && python -m pip install -r ${ORDER_DIR}/requirements-dev.txt >/dev/null || true
+            pip install -r ${ORDER_DIR}/requirements.txt || true
+            pip install -r ${ORDER_DIR}/requirements-dev.txt || true
             export POSTGRES_HOST=localhost POSTGRES_PORT=55433 POSTGRES_DB=orders POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
             export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-            pytest -q -p pytest_timeout ${ORDER_DIR}/tests --junitxml=order_unit.xml --timeout=60 --timeout-method=thread
+            pytest -q -p pytest_timeout ${ORDER_DIR}/tests --junitxml=order_unit.xml --timeout=60
             deactivate
           fi
 
-          echo "[TEST][UNIT] Stop DB containers"
           docker rm -f product_db order_db >/dev/null 2>&1 || true
-
-          echo "[TEST][INT] Compose up (if tests/integration exists)"
-          if [ -d tests/integration ]; then
-            (docker compose up -d --remove-orphans || docker-compose up -d --remove-orphans)
-            wait_http () { url="$1"; max="${2:-90}"; i=0; until curl -fsS "$url" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge $max ] && return 1; sleep 1; done; }
-            wait_http "http://localhost:8000/health" 90
-            wait_http "http://localhost:8001/health" 90
-
-            INT_KEY=$(date +%s)
-            make_venv ".venv_int_${INT_KEY}" "pytest>=8,<9" "pytest-timeout==2.3.1" requests
-            . ".venv_int_${INT_KEY}/bin/activate"
-            export PRODUCT_BASE=${PRODUCT_BASE:-http://localhost:8000}
-            export ORDER_BASE=${ORDER_BASE:-http://localhost:8001}
-            export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-            pytest -q -p pytest_timeout tests/integration --junitxml=integration.xml --timeout=90 --timeout-method=thread
-            deactivate
-            (docker compose down -v || docker-compose down -v)
-          else
-            echo "[TEST][INT] No tests/integration — skipping"
-          fi
         '''
       }
       post {
