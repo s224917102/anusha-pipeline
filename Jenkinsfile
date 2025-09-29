@@ -322,7 +322,6 @@ stage('Deploy') {
             echo "[RELEASE] Login & push images"
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
 
-            # Push all tagged images
             for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
               docker push $img:${IMAGE_TAG}
               docker push $img:latest
@@ -334,28 +333,53 @@ stage('Deploy') {
             kubectl config use-context ${KUBE_CONTEXT}
             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-            echo "[RELEASE] Applying backend infrastructure (secrets, configmaps, databases)..."
-            for f in secrets.yaml configmaps.yaml product-db.yaml order-db.yaml; do
+            echo "[RELEASE] Apply infra (configmaps, secrets, databases)"
+            for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
               [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f"
             done
 
-            echo "[RELEASE] Applying backend microservices (product, order, frontend)..."
+            echo "[RELEASE] Apply microservices (product, order, frontend)"
             for f in product-service.yaml order-service.yaml frontend.yaml; do
               [ -f "${K8S_DIR}/$f" ] && sed "s|:latest|:${IMAGE_TAG}|g" "${K8S_DIR}/$f" | kubectl apply -n ${NAMESPACE} -f -
             done
 
-            echo "[RELEASE] Applying monitoring stack (Prometheus + Grafana)..."
+            echo "[RELEASE] Apply monitoring (Prometheus + Grafana)"
             for f in prometheus-configmap.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
               [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
             done
 
-            # Helper: rollout check with rollback
+            # Wait for LoadBalancer IPs
+            echo "[RELEASE] Waiting for Product, Order, Frontend LoadBalancer IPs (up to 5 minutes)..."
+            PRODUCT_IP=""; ORDER_IP=""; FRONTEND_IP=""
+            for i in $(seq 1 60); do
+              echo "Attempt $i/60..."
+              PRODUCT_IP=$(kubectl get svc product-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+              ORDER_IP=$(kubectl get svc order-service   -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+              FRONTEND_IP=$(kubectl get svc frontend     -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+
+              if [[ -n "$PRODUCT_IP" && -n "$ORDER_IP" && -n "$FRONTEND_IP" ]]; then
+                echo "All LB IPs assigned!"
+                break
+              fi
+              sleep 5
+            done
+
+            if [[ -z "$PRODUCT_IP" || -z "$ORDER_IP" || -z "$FRONTEND_IP" ]]; then
+              echo "[RELEASE][ERROR] One or more LB IPs not assigned after timeout."
+              kubectl get svc -n ${NAMESPACE} || true
+              exit 1
+            fi
+
+            echo "[RELEASE] Product Service IP:  $PRODUCT_IP"
+            echo "[RELEASE] Order Service IP:    $ORDER_IP"
+            echo "[RELEASE] Frontend Service IP: $FRONTEND_IP"
+
+            # Rollout checks with rollback if needed
             update_img () {
-              app_label="$1"; new_ref="$2"
+              app_label="$1"
               dep="$(kubectl get deploy -n ${NAMESPACE} -l app=${app_label} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
               [ -z "$dep" ] && { echo "[RELEASE][WARN] No deployment for app=${app_label}"; return 0; }
-              container="$(kubectl get deploy "$dep" -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].name}')"
-              echo "[RELEASE] Ensuring rollout for $dep"
+              echo "[RELEASE] Checking rollout for $dep..."
               if ! kubectl rollout status deploy/"$dep" -n ${NAMESPACE} --timeout=300s; then
                 echo "[RELEASE][ERROR] Rollout failed for ${dep}. Rolling back…"
                 kubectl rollout undo deploy/"$dep" -n ${NAMESPACE} || true
@@ -364,15 +388,16 @@ stage('Deploy') {
               fi
             }
 
-            update_img product-service ${PRODUCT_IMG}:${IMAGE_TAG}
-            update_img order-service   ${ORDER_IMG}:${IMAGE_TAG}
-            update_img frontend        ${FRONTEND_IMG}:${IMAGE_TAG}
+            update_img product-service
+            update_img order-service
+            update_img frontend
 
-            echo "[RELEASE] Release completed successfully."
+            echo "[RELEASE] Kubernetes release complete."
           '''
         }
       }
     }
+
 
 
     stage('Monitoring') {
