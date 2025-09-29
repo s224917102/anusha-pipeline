@@ -201,6 +201,7 @@ pipeline {
     }
 
     /* ========================= SECURITY (local images) ======================= */
+    /* ========================= SECURITY (local images) ======================= */
     stage('Security') {
       steps {
         withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
@@ -231,7 +232,7 @@ pipeline {
                 --no-progress /src || true
 
             echo "[SECURITY] Image scans (blocking on HIGH/CRITICAL) against local images"
-            IMAGES="${PRODUCT_IMG}:${IMAGE_TAG} ${ORDER_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${IMAGE_TAG}"
+            IMAGES="${LOCAL_IMG_PRODUCT} ${LOCAL_IMG_ORDER} ${LOCAL_IMG_FRONTEND}"
 
             for IMG in $IMAGES; do
               echo " - scanning $IMG"
@@ -265,6 +266,7 @@ pipeline {
         archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
       }
     }
+
     /* ======================================================================== */
 
     stage('Deploy') {
