@@ -8,7 +8,7 @@ pipeline {
   }
 
   environment {
-    PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/opt/python@3.11/bin"
+    PATH = "/opt/homebrew/opt/python@3.11/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
     DOCKERHUB_NS    = 's224917102'
     DOCKERHUB_CREDS = 'dockerhub-s224917102'
@@ -102,13 +102,8 @@ pipeline {
 
           make_venv () {
             vdir="$1"; shift
-            python3 -m venv "$vdir"
+            python3.11 -m venv "$vdir"
             . "$vdir/bin/activate"
-            
-
-            export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
-            pip install psycopg2-binary==2.9.9
-
             python -m pip install -U pip wheel >/dev/null
             [ $# -gt 0 ] && python -m pip install "$@" >/dev/null || true
             deactivate
