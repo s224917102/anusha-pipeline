@@ -1,5 +1,3 @@
-# week08/k8s/frontend.yaml
-
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,28 +13,39 @@ spec:
     metadata:
       labels:
         app: frontend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "80"   # Nginx exposes metrics if configured on port 80
     spec:
-      securityContext:
-        seccompProfile:
-          type: RuntimeDefault
       containers:
         - name: frontend-container
-          image: docker.io/s224917102/frontend:${IMAGE_TAG}
+          image: docker.io/s224917102/frontend:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 8080          # non-privileged in-container port
+            - containerPort: 80
           securityContext:
             runAsNonRoot: true
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp              # writable scratch only
-      volumes:
-        - name: tmp
-          emptyDir: {}
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 10
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 40
+            periodSeconds: 10
+            failureThreshold: 5
 
 ---
 apiVersion: v1
@@ -50,6 +59,6 @@ spec:
     app: frontend
   ports:
     - protocol: TCP
-      port: 80                 # external/cluster port (kept at 80)
-      targetPort: 8080         # maps to new container port
+      port: 3001       # external port exposed via LB
+      targetPort: 80   # container port
   type: LoadBalancer

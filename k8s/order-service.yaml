@@ -1,5 +1,3 @@
-# week09/example-3/k8s/order-service.yaml
-
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,17 +16,17 @@ spec:
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/path: "/metrics"
-        prometheus.io/port: "8080"        # container listens on 8080 now
+        prometheus.io/port: "8080"        # container listens on 8080
     spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: order-service-container
-          image: docker.io/s224917102/order_service:${IMAGE_TAG}
+          image: docker.io/s224917102/order_service:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 8080         # moved from 8001 -> 8080 (non-privileged)
+            - containerPort: 8080
           env:
             - name: POSTGRES_HOST
               value: order-db-service-w09-aks
@@ -60,7 +58,22 @@ spec:
               drop: ["ALL"]
           volumeMounts:
             - name: tmp
-              mountPath: /tmp              # writable scratch only
+              mountPath: /tmp
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 25
+            periodSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 50
+            periodSeconds: 10
+            failureThreshold: 5
       volumes:
         - name: tmp
           emptyDir: {}
@@ -77,6 +90,6 @@ spec:
     app: order-service
   ports:
     - protocol: TCP
-      port: 8001               # external LB/ClusterIP port (unchanged)
-      targetPort: 8080         # maps to new container port
+      port: 8001       # external LB/ClusterIP port
+      targetPort: 8080 # container port
   type: LoadBalancer
