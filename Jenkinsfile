@@ -267,7 +267,6 @@ pipeline {
     }
     /* ======================================================================== */
 
-     
     stage('Deploy') {
       steps {
         sh '''#!/usr/bin/env bash
@@ -330,7 +329,6 @@ pipeline {
         '''
       }
     }
-
 
     stage('Release') {
       steps {
