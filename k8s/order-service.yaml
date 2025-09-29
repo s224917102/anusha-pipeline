@@ -40,7 +40,7 @@ spec:
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
-                  name: ecomm-config-w09-aks
+                  name: ecomm-secrets-w09-aks
                   key: POSTGRES_USER
             - name: POSTGRES_PASSWORD
               valueFrom:

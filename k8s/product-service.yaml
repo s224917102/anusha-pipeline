@@ -33,7 +33,7 @@ spec:
           valueFrom:
             configMapKeyRef:
               name: ecomm-config-w09-aks
-              key: PRODUC TS_DB_NAME
+              key: PRODUCTS_DB_NAME
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
