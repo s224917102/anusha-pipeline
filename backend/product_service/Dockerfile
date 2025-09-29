@@ -1,8 +1,9 @@
-# week09/example-2/backend/product_service/Dockerfile
-
-FROM python:3.10-slim-buster
+FROM python:3.10-alpine
 
 WORKDIR /code
+
+# Install required system dependencies
+RUN apk add --no-cache gcc musl-dev linux-headers
 
 COPY requirements.txt .
 

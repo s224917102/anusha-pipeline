@@ -1,6 +1,5 @@
-# week09/example-2/frontend/Dockerfile
-
-FROM nginx:alpine
+# Use specific nginx version
+FROM nginx:1.27-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
