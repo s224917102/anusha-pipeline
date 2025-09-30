@@ -317,116 +317,75 @@ pipeline {
         steps {
             withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
             sh '''#!/usr/bin/env bash
-                set -euo pipefail
+            set -euo pipefail
 
-                echo "[RELEASE] Login & push images"
-                echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+            echo "[RELEASE] Login & push images"
+            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
 
-                for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-                  docker push $img:${IMAGE_TAG}
-                  docker push $img:latest
-                  docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
-                  docker push $img:${RELEASE_TAG}
-                done
+            for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
+                docker push $img:${IMAGE_TAG}
+                docker push $img:latest
+                docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
+                docker push $img:${RELEASE_TAG}
+            done
 
-                echo "[RELEASE] Deploy to local Kubernetes (${KUBE_CONTEXT})"
-                kubectl config use-context ${KUBE_CONTEXT}
-                kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+            echo "[RELEASE] Switch to Kubernetes context: ${KUBE_CONTEXT}"
+            kubectl config use-context ${KUBE_CONTEXT}
+            kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-                echo "[RELEASE] Apply MetalLB config if present"
-                if [ -f "${K8S_DIR}/metallb-config.yaml" ]; then
-                  kubectl apply -f "${K8S_DIR}/metallb-config.yaml"
-                else
-                  echo "[RELEASE][WARN] No metallb-config.yaml found in ${K8S_DIR}, skipping"
+            echo "[RELEASE] Apply infra (configmaps, secrets, databases)"
+            kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/configmaps.yaml || true
+            kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/secrets.yaml || true
+            kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/product-db.yaml || true
+            kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/order-db.yaml || true
+
+            echo "[RELEASE] Apply microservices"
+            kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/product-service.yaml
+            kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/order-service.yaml
+            kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/frontend.yaml
+
+            echo "[RELEASE] Apply monitoring"
+            kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/prometheus-deployment.yaml
+            kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/grafana-deployment.yaml
+
+            echo "[RELEASE] Waiting for External IPs..."
+            check_ip () {
+                local svc=$1
+                for i in $(seq 1 60); do
+                ip=$(kubectl get svc $svc -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+                if [ -n "$ip" ]; then
+                    echo "$ip"
+                    return 0
                 fi
-
-                echo "[RELEASE] Apply infra (configmaps, secrets, databases)"
-                for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
-                  [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                sleep 5
                 done
+                return 1
+            }
 
-                echo "[RELEASE] Apply microservices (product, order, frontend)"
-                for f in product-service.yaml order-service.yaml frontend.yaml; do
-                  [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
-                done
+            PRODUCT_IP=$(check_ip product-service)       || { echo "Product service no IP"; exit 1; }
+            ORDER_IP=$(check_ip order-service)           || { echo "Order service no IP"; exit 1; }
+            FRONTEND_IP=$(check_ip frontend)             || { echo "Frontend no IP"; exit 1; }
+            PROM_IP=$(check_ip prometheus-service)       || { echo "Prometheus no IP"; exit 1; }
+            GRAF_IP=$(check_ip grafana-service)          || { echo "Grafana no IP"; exit 1; }
 
-                echo "[RELEASE] Apply monitoring (Prometheus + Grafana)"
-                for f in prometheus-config.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
-                  [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
-                done
+            echo "[RELEASE] Testing external endpoints..."
+            curl -fsS http://${PRODUCT_IP}:8000/ || { echo "Product failed"; exit 1; }
+            curl -fsS http://${ORDER_IP}:8001/   || { echo "Order failed"; exit 1; }
+            curl -fsS http://${FRONTEND_IP}:3001/ || { echo "Frontend failed"; exit 1; }
+            curl -fsS http://${PROM_IP}:9090/-/ready || { echo "Prometheus failed"; exit 1; }
+            curl -fsS http://${GRAF_IP}:3000/login   || { echo "Grafana failed"; exit 1; }
 
-                echo "[RELEASE] Waiting for LoadBalancer IPs (Product, Order, Frontend, Prometheus, Grafana)"
-
-                get_svc_address () {
-                  svc="$1"; ns="$2"
-                  ip=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-                  host=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-                  port=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
-
-                  if [ -n "$ip" ]; then
-                      echo "${ip}:${port}"
-                  elif [ -n "$host" ]; then
-                      echo "${host}:${port}"
-                  else
-                      echo ""
-                  fi
-                }
-
-                declare -A SERVICE_PORTS=(
-                  [product-service]=8000
-                  [order-service]=8001
-                  [frontend]=3001
-                  [prometheus-service]=9090
-                  [grafana-service]=3000
-                )
-
-                declare -A SERVICE_ADDRS
-
-                for svc in "${!SERVICE_PORTS[@]}"; do
-                  echo "Waiting for $svc address..."
-                  addr=""
-                  for i in $(seq 1 60); do
-                    addr="$(get_svc_address "$svc" ${NAMESPACE})"
-                    if [ -n "$addr" ]; then
-                      SERVICE_ADDRS[$svc]="$addr"
-                      echo "[RELEASE] $svc available at $addr"
-                      break
-                    fi
-                    echo "Attempt $i: still pending..."
-                    sleep 5
-                  done
-
-                  if [ -z "${SERVICE_ADDRS[$svc]:-}" ]; then
-                    nodeport=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
-                    if [ -n "$nodeport" ]; then
-                      SERVICE_ADDRS[$svc]="localhost:${nodeport}"
-                      echo "[RELEASE][FALLBACK] $svc using localhost:${nodeport}"
-                    fi
-                  fi
-                done
-
-                echo "[RELEASE] Kubernetes release complete."
-                kubectl get svc -n ${NAMESPACE}
-
-                echo "[RELEASE] Checking connectivity of all services..."
-                for svc in "${!SERVICE_PORTS[@]}"; do
-                  addr="${SERVICE_ADDRS[$svc]:-}"
-                  if [ -z "$addr" ]; then
-                    echo "[RELEASE][ERROR] $svc has no external address"
-                    exit 1
-                  fi
-                  echo " - Curling $svc at http://$addr"
-                  if ! curl -fsS "http://$addr" >/dev/null; then
-                    echo "[RELEASE][ERROR] $svc not reachable at http://$addr"
-                    exit 1
-                  fi
-                done
-
-                echo "[RELEASE] All services are reachable."
+            echo "[RELEASE] All services reachable at:"
+            echo " - Product:    http://${PRODUCT_IP}:8000"
+            echo " - Order:      http://${ORDER_IP}:8001"
+            echo " - Frontend:   http://${FRONTEND_IP}:3001"
+            echo " - Prometheus: http://${PROM_IP}:9090"
+            echo " - Grafana:    http://${GRAF_IP}:3000"
             '''
             }
         }
     }
+
 
     stage('Monitoring') {
       steps {
