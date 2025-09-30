@@ -323,10 +323,10 @@ pipeline {
                 echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
 
                 for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-                docker push $img:${IMAGE_TAG}
-                docker push $img:latest
-                docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
-                docker push $img:${RELEASE_TAG}
+                  docker push $img:${IMAGE_TAG}
+                  docker push $img:latest
+                  docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
+                  docker push $img:${RELEASE_TAG}
                 done
 
                 echo "[RELEASE] Deploy to local Kubernetes (${KUBE_CONTEXT})"
@@ -335,77 +335,90 @@ pipeline {
 
                 echo "[RELEASE] Apply MetalLB config if present"
                 if [ -f "${K8S_DIR}/metallb-config.yaml" ]; then
-                kubectl apply -f "${K8S_DIR}/metallb-config.yaml"
+                  kubectl apply -f "${K8S_DIR}/metallb-config.yaml"
                 else
-                echo "[RELEASE][WARN] No metallb-config.yaml found in ${K8S_DIR}, skipping"
+                  echo "[RELEASE][WARN] No metallb-config.yaml found in ${K8S_DIR}, skipping"
                 fi
 
                 echo "[RELEASE] Apply infra (configmaps, secrets, databases)"
                 for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
-                [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                  [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
                 done
 
                 echo "[RELEASE] Apply microservices (product, order, frontend)"
                 for f in product-service.yaml order-service.yaml frontend.yaml; do
-                [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                  [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
                 done
 
                 echo "[RELEASE] Apply monitoring (Prometheus + Grafana)"
                 for f in prometheus-config.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
-                [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                  [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
                 done
 
                 echo "[RELEASE] Waiting for LoadBalancer IPs (Product, Order, Frontend, Prometheus, Grafana)"
-                get_svc_address () {
-                svc="$1"; ns="$2"
-                ip=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-                host=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-                port=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
 
-                if [ -n "$ip" ]; then
-                    echo "${ip}:${port}"
-                elif [ -n "$host" ]; then
-                    echo "${host}:${port}"
-                else
-                    echo ""
-                fi
+                get_svc_address () {
+                  svc="$1"; ns="$2"
+                  ip=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+                  host=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+                  port=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
+
+                  if [ -n "$ip" ]; then
+                      echo "${ip}:${port}"
+                  elif [ -n "$host" ]; then
+                      echo "${host}:${port}"
+                  else
+                      echo ""
+                  fi
                 }
 
                 declare -A SERVICE_PORTS=(
-                [product-service]=8000
-                [order-service]=8001
-                [frontend]=3001
-                [prometheus-service]=9090
-                [grafana-service]=3000
+                  [product-service]=8000
+                  [order-service]=8001
+                  [frontend]=3001
+                  [prometheus-service]=9090
+                  [grafana-service]=3000
                 )
 
-                declare -A SERVICE_ADDRS
+                declare -A SERVICE_ADDRS=()
 
                 for svc in "${!SERVICE_PORTS[@]}"; do
-                echo "Waiting for $svc address..."
-                for i in $(seq 1 60); do
-                    addr=$(get_svc_address "$svc" "$NAMESPACE" || echo "")
+                  echo "Waiting for $svc address..."
+                  for i in $(seq 1 60); do
+                    addr="$(get_svc_address "$svc" ${NAMESPACE} || echo "")"
                     if [ -n "$addr" ]; then
-                    SERVICE_ADDRS[$svc]="$addr"
-                    echo "[RELEASE] $svc available at $addr"
-                    break
+                      SERVICE_ADDRS[$svc]="$addr"
+                      echo "[RELEASE] $svc available at $addr"
+                      break
                     fi
                     echo "Attempt $i: still pending..."
                     sleep 5
-                done
+                  done
+                  # Default to localhost:NodePort if MetalLB didn’t assign IP
+                  if [ -z "${SERVICE_ADDRS[$svc]:-}" ]; then
+                    nodeport=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
+                    if [ -n "$nodeport" ]; then
+                      SERVICE_ADDRS[$svc]="localhost:${nodeport}"
+                      echo "[RELEASE][FALLBACK] $svc using localhost:${nodeport}"
+                    fi
+                  fi
                 done
 
                 echo "[RELEASE] Kubernetes release complete."
                 kubectl get svc -n ${NAMESPACE}
 
                 echo "[RELEASE] Checking connectivity of all services..."
-                for svc in "${!SERVICE_ADDRS[@]}"; do
-                addr="${SERVICE_ADDRS[$svc]:-}"
-                echo " - Curling $svc at http://$addr"
-                if [ -z "$addr" ] || ! curl -fsS "http://$addr" >/dev/null; then
+                for svc in "${!SERVICE_PORTS[@]}"; do
+                  addr="${SERVICE_ADDRS[$svc]:-}"
+                  if [ -z "$addr" ]; then
+                    echo "[RELEASE][ERROR] $svc has no external address"
+                    exit 1
+                  fi
+                  echo " - Curling $svc at http://$addr"
+                  if ! curl -fsS "http://$addr" >/dev/null; then
                     echo "[RELEASE][ERROR] $svc not reachable at http://$addr"
                     exit 1
-                fi
+                  fi
                 done
 
                 echo "[RELEASE] All services are reachable."
@@ -413,7 +426,6 @@ pipeline {
             }
         }
     }
-
 
     stage('Monitoring') {
       steps {
