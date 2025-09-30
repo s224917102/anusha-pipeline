@@ -261,7 +261,7 @@ pipeline {
 
     /* ======================================================================== */
 
-stage('Deploy') {
+    stage('Deploy') {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
@@ -399,27 +399,54 @@ stage('Deploy') {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          echo "[MONITOR] Quick health checks via port-forward"
-          PRODUCT_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=product-service -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-          ORDER_SVC=$(kubectl get svc -n ${NAMESPACE} -l app=order-service   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
-          if [ -n "$PRODUCT_SVC" ]; then
-            kubectl port-forward svc/${PRODUCT_SVC} 18000:8000 -n ${NAMESPACE} >/tmp/pf_prod.log 2>&1 &
-            PF1=$!; sleep 3
-            curl -fsS http://localhost:18000/health || (echo "Product /health failed" && kill $PF1 || true && exit 1)
-            kill $PF1 || true
-          fi
+          echo "[MONITOR] Collecting external IPs for services"
+          get_ip () {
+            svc="$1"
+            ip=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+            host=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            port=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
 
-          if [ -n "$ORDER_SVC" ]; then
-            kubectl port-forward svc/${ORDER_SVC} 18001:8001 -n ${NAMESPACE} >/tmp/pf_order.log 2>&1 &
-            PF2=$!; sleep 3
-            curl -fsS http://localhost:18001/health || (echo "Order /health failed" && kill $PF2 || true && exit 1)
-            kill $PF2 || true
-          fi
+            if [ -n "$ip" ]; then
+              echo "${ip}:${port}"
+            elif [ -n "$host" ]; then
+              echo "${host}:${port}"
+            else
+              echo ""
+            fi
+          }
+
+          PRODUCT_ADDR=$(get_ip product-service)
+          ORDER_ADDR=$(get_ip order-service)
+          FRONTEND_ADDR=$(get_ip frontend)
+          PROM_ADDR=$(get_ip prometheus-service)
+          GRAF_ADDR=$(get_ip grafana-service)
+
+          echo "[MONITOR] Product:   ${PRODUCT_ADDR:-not available}"
+          echo "[MONITOR] Order:     ${ORDER_ADDR:-not available}"
+          echo "[MONITOR] Frontend:  ${FRONTEND_ADDR:-not available}"
+          echo "[MONITOR] Prometheus:${PROM_ADDR:-not available}"
+          echo "[MONITOR] Grafana:   ${GRAF_ADDR:-not available}"
+
+          echo "[MONITOR] Checking /health endpoints..."
+          curl -fsS http://${PRODUCT_ADDR}/health || (echo "Product health failed" && exit 1)
+          curl -fsS http://${ORDER_ADDR}/health   || (echo "Order health failed" && exit 1)
+
+          echo "[MONITOR] Checking metrics endpoints..."
+          curl -fsS http://${PRODUCT_ADDR}/metrics | grep -q "http_requests_total" || (echo "Product metrics missing http_requests_total" && exit 1)
+          curl -fsS http://${ORDER_ADDR}/metrics   | grep -q "http_requests_total" || (echo "Order metrics missing http_requests_total" && exit 1)
+
+          echo "[MONITOR] Querying Prometheus for metrics..."
+          curl -fsS "http://${PROM_ADDR}/api/v1/query?query=http_requests_total" | grep -q '"status":"success"' || (echo "Prometheus query failed" && exit 1)
+
+          echo "[MONITOR] Checking Grafana login page..."
+          curl -fsS http://${GRAF_ADDR}/login || (echo "Grafana UI not reachable" && exit 1)
+
+          echo "[MONITOR] All external services and metrics verified successfully."
         '''
       }
     }
-  }
+}
   post {
     success { echo "Pipeline succeeded - ${IMAGE_TAG} (${RELEASE_TAG})" }
     failure { echo "Pipeline failed - see logs." }
