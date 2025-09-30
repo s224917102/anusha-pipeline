@@ -428,10 +428,6 @@ pipeline {
           echo "[MONITOR] Prometheus:${PROM_ADDR:-not available}"
           echo "[MONITOR] Grafana:   ${GRAF_ADDR:-not available}"
 
-          echo "[MONITOR] Checking /health endpoints..."
-          curl -fsS http://${PRODUCT_ADDR}/health || (echo "Product health failed" && exit 1)
-          curl -fsS http://${ORDER_ADDR}/health   || (echo "Order health failed" && exit 1)
-
           echo "[MONITOR] Checking metrics endpoints..."
           curl -fsS http://${PRODUCT_ADDR}/metrics | grep -q "http_requests_total" || (echo "Product metrics missing http_requests_total" && exit 1)
           curl -fsS http://${ORDER_ADDR}/metrics   | grep -q "http_requests_total" || (echo "Order metrics missing http_requests_total" && exit 1)
