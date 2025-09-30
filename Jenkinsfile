@@ -322,7 +322,7 @@ pipeline {
             echo "[RELEASE] Login & push images"
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
 
-            for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
+            for img in ${PRODUCT_IMG} ${ORDER_IMG}; do
                 docker push $img:${IMAGE_TAG}
                 docker push $img:latest
                 docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
@@ -342,7 +342,6 @@ pipeline {
             echo "[RELEASE] Apply microservices"
             kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/product-service.yaml
             kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/order-service.yaml
-            kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/frontend.yaml
 
             echo "[RELEASE] Apply monitoring"
             kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}/prometheus-deployment.yaml
@@ -364,21 +363,18 @@ pipeline {
 
             PRODUCT_IP=$(check_ip product-service)       || { echo "Product service no IP"; exit 1; }
             ORDER_IP=$(check_ip order-service)           || { echo "Order service no IP"; exit 1; }
-            FRONTEND_IP=$(check_ip frontend)             || { echo "Frontend no IP"; exit 1; }
             PROM_IP=$(check_ip prometheus-service)       || { echo "Prometheus no IP"; exit 1; }
             GRAF_IP=$(check_ip grafana-service)          || { echo "Grafana no IP"; exit 1; }
 
             echo "[RELEASE] Testing external endpoints..."
             curl -fsS http://${PRODUCT_IP}:8000/ || { echo "Product failed"; exit 1; }
             curl -fsS http://${ORDER_IP}:8001/   || { echo "Order failed"; exit 1; }
-            curl -fsS http://${FRONTEND_IP}:3001/ || { echo "Frontend failed"; exit 1; }
             curl -fsS http://${PROM_IP}:9090/-/ready || { echo "Prometheus failed"; exit 1; }
             curl -fsS http://${GRAF_IP}:3000/login   || { echo "Grafana failed"; exit 1; }
 
             echo "[RELEASE] All services reachable at:"
             echo " - Product:    http://${PRODUCT_IP}:8000"
             echo " - Order:      http://${ORDER_IP}:8001"
-            echo " - Frontend:   http://${FRONTEND_IP}:3001"
             echo " - Prometheus: http://${PROM_IP}:9090"
             echo " - Grafana:    http://${GRAF_IP}:3000"
             '''
