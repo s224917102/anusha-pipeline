@@ -396,6 +396,7 @@ pipeline {
             done
           }
 
+          
           echo "[RELEASE] Checking connectivity..."
           wait_http "http://${PRODUCT_ADDR}/metrics" 60 || { echo "Product failed"; exit 1; }
           wait_http "http://${ORDER_ADDR}/metrics" 60 || { echo "Order failed"; exit 1; }
