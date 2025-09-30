@@ -312,6 +312,7 @@ pipeline {
         '''
       }
     }
+
     stage('Release') {
         steps {
             withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
@@ -371,7 +372,7 @@ pipeline {
                   fi
                 }
 
-                # Service map (keys MUST match your K8s Service names)
+                # Explicitly quote keys
                 declare -A SERVICE_PORTS=(
                   ["product-service"]=8000
                   ["order-service"]=8001
@@ -380,18 +381,18 @@ pipeline {
                   ["grafana-service"]=3000
                 )
 
-                # Initialize addresses
-                declare -A SERVICE_ADDRS
-                for k in "${!SERVICE_PORTS[@]}"; do
-                  SERVICE_ADDRS["$k"]=""
+                # Initialize SERVICE_ADDRS with empty strings
+                declare -A SERVICE_ADDRS=()
+                for svc in "${!SERVICE_PORTS[@]}"; do
+                  SERVICE_ADDRS["$svc"]=""
                 done
 
-                # Wait for IP/host from MetalLB or fallback to NodePort
+                # Try to resolve addresses
                 for svc in "${!SERVICE_PORTS[@]}"; do
                   echo "Waiting for $svc address..."
                   for i in $(seq 1 60); do
-                    addr="$(get_svc_address "$svc" ${NAMESPACE} || true)"
-                    if [ -n "${addr:-}" ]; then
+                    addr="$(get_svc_address "$svc" "${NAMESPACE}" || true)"
+                    if [ -n "$addr" ]; then
                       SERVICE_ADDRS["$svc"]="$addr"
                       echo "[RELEASE] $svc available at $addr"
                       break
@@ -400,9 +401,10 @@ pipeline {
                     sleep 5
                   done
 
+                  # Fallback to NodePort if no LoadBalancer
                   if [ -z "${SERVICE_ADDRS["$svc"]:-}" ]; then
-                    nodeport=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
-                    if [ -n "${nodeport:-}" ]; then
+                    nodeport=$(kubectl get svc "$svc" -n "${NAMESPACE}" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
+                    if [ -n "$nodeport" ]; then
                       SERVICE_ADDRS["$svc"]="localhost:${nodeport}"
                       echo "[RELEASE][FALLBACK] $svc using localhost:${nodeport}"
                     fi
@@ -410,7 +412,7 @@ pipeline {
                 done
 
                 echo "[RELEASE] Kubernetes release complete."
-                kubectl get svc -n ${NAMESPACE}
+                kubectl get svc -n "${NAMESPACE}"
 
                 echo "[RELEASE] Checking connectivity of all services..."
                 for svc in "${!SERVICE_PORTS[@]}"; do
