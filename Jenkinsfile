@@ -335,16 +335,19 @@ pipeline {
             kubectl config use-context ${KUBE_CONTEXT}
             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-            for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml; do
+            for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml prometheus-configmap.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
               [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
             done
 
             echo "[RELEASE] Restart deployments to pull :latest images"
             kubectl rollout restart deployment/product-service -n ${NAMESPACE}
             kubectl rollout restart deployment/order-service -n ${NAMESPACE}
+            kubectl rollout restart deployment/frontend -n ${NAMESPACE}
+            kubectl rollout restart deployment/prometheus-server -n ${NAMESPACE}
+            kubectl rollout restart deployment/grafana -n ${NAMESPACE}
 
             echo "[RELEASE] Wait for rollouts to complete"
-            for dep in product-service order-service; do
+            for dep in product-service order-service frontend prometheus-server grafana; do
               kubectl rollout status deployment/$dep -n ${NAMESPACE} --timeout=180s || {
                 echo "[RELEASE][ERROR] Deployment $dep failed. Dumping logs..."
                 kubectl describe deployment $dep -n ${NAMESPACE} || true
@@ -371,20 +374,30 @@ pipeline {
 
             PRODUCT_ADDR=$(get_svc_addr product-service)
             ORDER_ADDR=$(get_svc_addr order-service)
+            FRONTEND_ADDR=$(get_svc_addr frontend)
+            PROM_ADDR=$(get_svc_addr prometheus-service)
+            GRAF_ADDR=$(get_svc_addr grafana-service)
 
             echo "[RELEASE] Product:   ${PRODUCT_ADDR:-unavailable}"
             echo "[RELEASE] Order:     ${ORDER_ADDR:-unavailable}"
-
+            echo "[RELEASE] Frontend:  ${FRONTEND_ADDR:-unavailable}"
+            echo "[RELEASE] Prometheus:${PROM_ADDR:-unavailable}"
+            echo "[RELEASE] Grafana:   ${GRAF_ADDR:-unavailable}"
 
             echo "[RELEASE] Testing external IPs..."
             curl -fsS "http://${PRODUCT_ADDR}/metrics"   || { echo "Product service failed"; exit 1; }
             curl -fsS "http://${ORDER_ADDR}/metrics"     || { echo "Order service failed"; exit 1; }
+            curl -fsS "http://${FRONTEND_ADDR}"          || { echo "Frontend failed"; exit 1; }
+            curl -fsS "http://${PROM_ADDR}/-/healthy"    || { echo "Prometheus failed"; exit 1; }
+            curl -fsS "http://${GRAF_ADDR}/login"        || { echo "Grafana failed"; exit 1; }
 
             echo "[RELEASE] All services are reachable at external IPs."
           '''
         }
       }
     }
+
+
 
     stage('Monitoring') {
       steps {
