@@ -313,91 +313,104 @@ pipeline {
       }
     }
 
-  stage('Release') {
-    steps {
-      withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-        sh '''#!/usr/bin/env bash
-          set -euo pipefail
+    stage('Release') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+          sh '''#!/usr/bin/env bash
+            set -euo pipefail
 
-          echo "[RELEASE] Login & push images"
-          echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+            echo "[RELEASE] Login & push images"
+            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
 
-          for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-            echo "Pushing $img:${IMAGE_TAG}, $img:latest, $img:${RELEASE_TAG}"
-            docker push $img:${IMAGE_TAG}
-            docker tag  $img:${IMAGE_TAG} $img:latest
-            docker push $img:latest
-            docker tag  $img:${IMAGE_TAG} $img:${RELEASE_TAG}
-            docker push $img:${RELEASE_TAG}
-          done
-
-          echo "[RELEASE] Apply manifests"
-          kubectl config use-context ${KUBE_CONTEXT}
-          kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-
-          for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml prometheus-config.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
-            [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
-          done
-
-          echo "[RELEASE] Restart deployments to pull :latest images"
-          kubectl rollout restart deployment/product-service -n ${NAMESPACE}
-          kubectl rollout restart deployment/order-service -n ${NAMESPACE}
-          kubectl rollout restart deployment/frontend -n ${NAMESPACE}
-          kubectl rollout restart deployment/prometheus-server -n ${NAMESPACE}
-          kubectl rollout restart deployment/grafana -n ${NAMESPACE}
-
-          echo "[RELEASE] Wait for rollouts to complete"
-          for dep in product-service order-service frontend prometheus-server grafana; do
-            kubectl rollout status deployment/$dep -n ${NAMESPACE} --timeout=180s || {
-              echo "[RELEASE][ERROR] Deployment $dep failed. Dumping logs..."
-              kubectl describe deployment $dep -n ${NAMESPACE} || true
-              kubectl get pods -l app=$dep -n ${NAMESPACE} -o wide || true
-              exit 1
-            }
-          done
-
-          echo "[RELEASE] Waiting for LoadBalancer IPs..."
-          get_svc_addr () {
-            svc="$1"
-            for i in $(seq 1 60); do
-              ip=$(kubectl get svc $svc -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-              port=$(kubectl get svc $svc -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
-              if [ -n "$ip" ] && [ -n "$port" ]; then
-                echo "${ip}:${port}"
-                return 0
-              fi
-              echo "[$svc] Waiting for external IP... attempt $i/60"
-              sleep 5
+            for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
+              echo "Pushing $img:${IMAGE_TAG}, $img:latest, $img:${RELEASE_TAG}"
+              docker push $img:${IMAGE_TAG}
+              docker tag  $img:${IMAGE_TAG} $img:latest
+              docker push $img:latest
+              docker tag  $img:${IMAGE_TAG} $img:${RELEASE_TAG}
+              docker push $img:${RELEASE_TAG}
             done
-            return 1
-          }
 
-          PRODUCT_ADDR=$(get_svc_addr product-service)
-          ORDER_ADDR=$(get_svc_addr order-service)
-          FRONTEND_ADDR=$(get_svc_addr frontend)
-          PROM_ADDR=$(get_svc_addr prometheus-service)
-          GRAF_ADDR=$(get_svc_addr grafana-service)
+            echo "[RELEASE] Prepare manifests with IMAGE_TAG=${IMAGE_TAG}"
+            mkdir -p k8s-rendered
+            for f in product-service.yaml order-service.yaml frontend.yaml; do
+              if [ -f "${K8S_DIR}/$f" ]; then
+                sed -e "s|s224917102/product_service:latest|${PRODUCT_IMG}:${IMAGE_TAG}|g" \
+                    -e "s|s224917102/order_service:latest|${ORDER_IMG}:${IMAGE_TAG}|g" \
+                    -e "s|s224917102/frontend:latest|${FRONTEND_IMG}:${IMAGE_TAG}|g" \
+                    "${K8S_DIR}/$f" > "k8s-rendered/$f"
+              fi
+            done
 
-          echo "[RELEASE] Product:   ${PRODUCT_ADDR:-unavailable}"
-          echo "[RELEASE] Order:     ${ORDER_ADDR:-unavailable}"
-          echo "[RELEASE] Frontend:  ${FRONTEND_ADDR:-unavailable}"
-          echo "[RELEASE] Prometheus:${PROM_ADDR:-unavailable}"
-          echo "[RELEASE] Grafana:   ${GRAF_ADDR:-unavailable}"
+            echo "[RELEASE] Apply manifests"
+            kubectl config use-context ${KUBE_CONTEXT}
+            kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-          echo "[RELEASE] Testing external IPs..."
-          curl -fsS "http://${PRODUCT_ADDR}/metrics"   || { echo "Product service failed"; exit 1; }
-          curl -fsS "http://${ORDER_ADDR}/metrics"     || { echo "Order service failed"; exit 1; }
-          curl -fsS "http://${FRONTEND_ADDR}"          || { echo "Frontend failed"; exit 1; }
-          curl -fsS "http://${PROM_ADDR}/-/healthy"    || { echo "Prometheus failed"; exit 1; }
-          curl -fsS "http://${GRAF_ADDR}/login"        || { echo "Grafana failed"; exit 1; }
+            # Apply infra
+            for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
+              [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+            done
 
-          echo "[RELEASE] All services are reachable at external IPs."
-        '''
+            # Apply rendered microservices
+            for f in product-service.yaml order-service.yaml frontend.yaml; do
+              [ -f "k8s-rendered/$f" ] && kubectl apply -n ${NAMESPACE} -f "k8s-rendered/$f" || true
+            done
+
+            # Monitoring
+            for f in prometheus-config.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
+              [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+            done
+
+            echo "[RELEASE] Wait for rollouts to complete"
+            for dep in product-service order-service frontend prometheus-server grafana; do
+              kubectl rollout status deployment/$dep -n ${NAMESPACE} --timeout=180s || {
+                echo "[RELEASE][ERROR] Deployment $dep failed. Dumping logs..."
+                kubectl describe deployment $dep -n ${NAMESPACE} || true
+                kubectl get pods -l app=$dep -n ${NAMESPACE} -o wide || true
+                exit 1
+              }
+            done
+
+            echo "[RELEASE] Waiting for LoadBalancer IPs..."
+            get_svc_addr () {
+              svc="$1"
+              for i in $(seq 1 60); do
+                ip=$(kubectl get svc $svc -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+                port=$(kubectl get svc $svc -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
+                if [ -n "$ip" ] && [ -n "$port" ]; then
+                  echo "${ip}:${port}"
+                  return 0
+                fi
+                echo "[$svc] Waiting for external IP... attempt $i/60"
+                sleep 5
+              done
+              return 1
+            }
+
+            PRODUCT_ADDR=$(get_svc_addr product-service)
+            ORDER_ADDR=$(get_svc_addr order-service)
+            FRONTEND_ADDR=$(get_svc_addr frontend)
+            PROM_ADDR=$(get_svc_addr prometheus-service)
+            GRAF_ADDR=$(get_svc_addr grafana-service)
+
+            echo "[RELEASE] Product:   ${PRODUCT_ADDR:-unavailable}"
+            echo "[RELEASE] Order:     ${ORDER_ADDR:-unavailable}"
+            echo "[RELEASE] Frontend:  ${FRONTEND_ADDR:-unavailable}"
+            echo "[RELEASE] Prometheus:${PROM_ADDR:-unavailable}"
+            echo "[RELEASE] Grafana:   ${GRAF_ADDR:-unavailable}"
+
+            echo "[RELEASE] Testing external IPs..."
+            curl -fsS "http://${PRODUCT_ADDR}/metrics"   || { echo "Product service failed"; exit 1; }
+            curl -fsS "http://${ORDER_ADDR}/metrics"     || { echo "Order service failed"; exit 1; }
+            curl -fsS "http://${FRONTEND_ADDR}"          || { echo "Frontend failed"; exit 1; }
+            curl -fsS "http://${PROM_ADDR}/-/healthy"    || { echo "Prometheus failed"; exit 1; }
+            curl -fsS "http://${GRAF_ADDR}/login"        || { echo "Grafana failed"; exit 1; }
+
+            echo "[RELEASE] All services are reachable at external IPs."
+          '''
+        }
       }
     }
-  }
-
-
 
     stage('Monitoring') {
       steps {
