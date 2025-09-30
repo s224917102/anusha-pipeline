@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
       - name: product-service-container
-        image: s224917102/product_service:latest
+        image: docker.io/s224917102/product_service:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8000

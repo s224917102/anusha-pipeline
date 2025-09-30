@@ -50,35 +50,23 @@ pipeline {
           env.GIT_SHA     = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
           env.IMAGE_TAG   = "${env.GIT_SHA}-${env.BUILD_NUMBER}"
           env.RELEASE_TAG = "v${env.BUILD_NUMBER}.${env.GIT_SHA}"
-          echo "[BUILD] IMAGE_TAG=${env.IMAGE_TAG} | RELEASE_TAG=${env.RELEASE_TAG}"
         }
         sh '''#!/usr/bin/env bash
           set -euo pipefail
 
-          PLATFORM="${DOCKER_BUILD_PLATFORM:-linux/amd64}"
           export DOCKER_BUILDKIT=1
+          PLATFORM="linux/amd64"
 
-          echo "[BUILD] docker=$(command -v docker || true)"
-          echo "[BUILD] docker compose=$(docker compose version | head -1 || docker-compose version | head -1 || true)"
-          echo "[BUILD] platform=${PLATFORM}"
+          echo "[BUILD] Using buildx for ${PLATFORM}"
+          docker buildx create --use --name multiarch || docker buildx use multiarch
+          docker buildx inspect --bootstrap
 
-          echo "[BUILD] Build local images"
-          docker build --pull --platform="${PLATFORM}" \
-            --label org.opencontainers.image.revision="${GIT_SHA}" \
-            --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
-            -t ${LOCAL_IMG_PRODUCT} ${PRODUCT_DIR}
+          echo "[BUILD] Build & tag images"
+          docker buildx build --platform=${PLATFORM} -t ${LOCAL_IMG_PRODUCT} ${PRODUCT_DIR} --load
+          docker buildx build --platform=${PLATFORM} -t ${LOCAL_IMG_ORDER}   ${ORDER_DIR} --load
+          docker buildx build --platform=${PLATFORM} -t ${LOCAL_IMG_FRONTEND} ${FRONTEND_DIR} --load
 
-          docker build --pull --platform="${PLATFORM}" \
-            --label org.opencontainers.image.revision="${GIT_SHA}" \
-            --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
-            -t ${LOCAL_IMG_ORDER}   ${ORDER_DIR}
-
-          docker build --pull --platform="${PLATFORM}" \
-            --label org.opencontainers.image.revision="${GIT_SHA}" \
-            --label org.opencontainers.image.source="$(git config --get remote.origin.url || true)" \
-            -t ${LOCAL_IMG_FRONTEND} ${FRONTEND_DIR}
-
-          echo "[BUILD] Tag images for registry"
+          echo "[BUILD] Tagging for registry"
           docker tag ${LOCAL_IMG_PRODUCT}  ${PRODUCT_IMG}:${IMAGE_TAG}
           docker tag ${LOCAL_IMG_PRODUCT}  ${PRODUCT_IMG}:latest
 
@@ -88,10 +76,19 @@ pipeline {
           docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:${IMAGE_TAG}
           docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:latest
 
-          echo "[BUILD] Done."
+          echo "[BUILD] Smoke test with docker-compose"
+          compose () { docker compose "$@" || docker-compose "$@"; }
+          COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=${IMAGE_TAG} compose up -d
+          sleep 15
+          curl -fsS http://localhost:3001/ || { echo "Frontend not responding"; exit 1; }
+          curl -fsS http://localhost:9090/-/healthy || { echo "Prometheus not healthy"; exit 1; }
+          curl -fsS http://localhost:3000/login || { echo "Grafana not responding"; exit 1; }
+          echo "[BUILD] All containers healthy."
+          compose down -v
         '''
       }
     }
+
     /* ======================================================================== */
 
     /* ========================= TEST ========================= */
