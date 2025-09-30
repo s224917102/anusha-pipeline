@@ -1,9 +1,9 @@
-# week08/k8s/order-db.yaml
+# week09/example-3/k8s/order-db.yaml
 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: order-db-deployment-w08e1 # Deployment name matches
+  name: order-db-deployment-w09-aks
   labels:
     app: order-db
 spec:
@@ -18,37 +18,37 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:15-alpine # Use the same PostgreSQL image as in Docker Compose
+        image: postgres:15-alpine
         ports:
-        - containerPort: 5432 # Default PostgreSQL port
+        - containerPort: 5432
         env:
         - name: POSTGRES_DB
           valueFrom:
             configMapKeyRef:
-              name: ecomm-config-w08e1 # ConfigMap name matches
-              key: ORDERS_DB_NAME # Point to the order database name
+              name: ecomm-config-w09-aks
+              key: ORDERS_DB_NAME
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
-              name: ecomm-secrets-w08e1 # Secret name matches
+              name: ecomm-secrets-w09-aks
               key: POSTGRES_USER
         - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: ecomm-secrets-w08e1 # Secret name matches
+              name: ecomm-secrets-w09-aks
               key: POSTGRES_PASSWORD
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: order-db-service-w08e1 # Internal DNS name for the Order DB
+  name: order-db-service-w09-aks
   labels:
     app: order-db
 spec:
   selector:
-    app: order-db # Selects pods with the label app: order-db
+    app: order-db
   ports:
     - protocol: TCP
-      port: 5432 # The port the service listens on (default PostgreSQL)
-      targetPort: 5432 # The port on the Pod (containerPort)
-  type: ClusterIP # Only accessible from within the cluster
+      port: 5432
+      targetPort: 5432
+  type: ClusterIP
