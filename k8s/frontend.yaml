@@ -33,6 +33,6 @@ spec:
     app: frontend
   ports:
     - protocol: TCP
-      port: 80 # The port the service listens on inside the cluster
+      port: 3001 # The port the service listens on inside the cluster
       targetPort: 80 # The port on the Pod (containerPort where Nginx runs)
   type: LoadBalancer # Exposes the service on a port on each Node's IP
