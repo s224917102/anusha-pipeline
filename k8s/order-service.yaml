@@ -25,13 +25,7 @@ spec:
         image: docker.io/s224917102/order_service:latest # added imagename
         imagePullPolicy: Always
         ports:
-        - containerPort: 8000
-        requests:
-          cpu: "100m"
-          memory: "128Mi"
-        limits:
-          cpu: "250m"
-          memory: "256Mi"
+        - containerPort: 8001
         env:
         - name: POSTGRES_HOST
           value: order-db-service-w08e1
