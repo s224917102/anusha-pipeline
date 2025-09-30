@@ -335,7 +335,7 @@ pipeline {
           kubectl config use-context ${KUBE_CONTEXT}
           kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-          for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml prometheus-*.yaml grafana-*.yaml; do
+          for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml frontend.yaml prometheus-config.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
             [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
           done
 
