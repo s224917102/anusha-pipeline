@@ -327,45 +327,60 @@ pipeline {
               docker push $img:${IMAGE_TAG}
               docker tag  $img:${IMAGE_TAG} $img:latest
               docker push $img:latest
+              docker tag  $img:${IMAGE_TAG} $img:${RELEASE_TAG}
+              docker push $img:${RELEASE_TAG}
             done
 
-            echo "[RELEASE] Apply manifests with IMAGE_TAG=${IMAGE_TAG}"
+            echo "[RELEASE] Apply manifests"
             kubectl config use-context ${KUBE_CONTEXT}
             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-            for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
-              [ -f "$f" ] && kubectl apply -n ${NAMESPACE} -f "$f"
+            for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml product-service.yaml order-service.yaml; do
+              [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
             done
 
-            # Replace :latest with ${IMAGE_TAG}
-            sed "s|:latest|:${IMAGE_TAG}|g" product-service.yaml | kubectl apply -n ${NAMESPACE} -f -
-            sed "s|:latest|:${IMAGE_TAG}|g" order-service.yaml   | kubectl apply -n ${NAMESPACE} -f -
-            sed "s|:latest|:${IMAGE_TAG}|g" frontend.yaml        | kubectl apply -n ${NAMESPACE} -f -
+            echo "[RELEASE] Restart deployments to pull :latest images"
+            kubectl rollout restart deployment/product-service -n ${NAMESPACE}
+            kubectl rollout restart deployment/order-service -n ${NAMESPACE}
 
-            echo "Waiting for Product, Order LoadBalancer IPs..."
-            PRODUCT_IP=""
-            ORDER_IP=""
-
-            for i in $(seq 1 60); do
-              echo "Attempt $i/60 to get IPs..."
-              PRODUCT_IP=$(kubectl get svc product-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)
-              ORDER_IP=$(kubectl get svc order-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)
-
-              if [ -n "$PRODUCT_IP" ] && [ -n "$ORDER_IP" ]; then
-                echo "All backend LoadBalancer IPs assigned!"
-                echo "Product Service IP: $PRODUCT_IP"
-                echo "Order Service IP: $ORDER_IP"
-                break
-              fi
-              sleep 5
+            echo "[RELEASE] Wait for rollouts to complete"
+            for dep in product-service order-service; do
+              kubectl rollout status deployment/$dep -n ${NAMESPACE} --timeout=180s || {
+                echo "[RELEASE][ERROR] Deployment $dep failed. Dumping logs..."
+                kubectl describe deployment $dep -n ${NAMESPACE} || true
+                kubectl get pods -l app=$dep -n ${NAMESPACE} -o wide || true
+                exit 1
+              }
             done
 
-            if [ -z "$PRODUCT_IP" ] || [ -z "$ORDER_IP" ]; then
-              echo "Error: One or more LoadBalancer IPs not assigned after timeout."
-              exit 1
-            fi
+            echo "[RELEASE] Waiting for LoadBalancer IPs..."
+            get_svc_addr () {
+              svc="$1"
+              for i in $(seq 1 60); do
+                ip=$(kubectl get svc $svc -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+                port=$(kubectl get svc $svc -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
+                if [ -n "$ip" ] && [ -n "$port" ]; then
+                  echo "${ip}:${port}"
+                  return 0
+                fi
+                echo "[$svc] Waiting for external IP... attempt $i/60"
+                sleep 5
+              done
+              return 1
+            }
 
-            echo "All services are reachable at external IPs."
+            PRODUCT_ADDR=$(get_svc_addr product-service)
+            ORDER_ADDR=$(get_svc_addr order-service)
+
+            echo "[RELEASE] Product:   ${PRODUCT_ADDR:-unavailable}"
+            echo "[RELEASE] Order:     ${ORDER_ADDR:-unavailable}"
+
+
+            echo "[RELEASE] Testing external IPs..."
+            curl -fsS "http://${PRODUCT_ADDR}/metrics"   || { echo "Product service failed"; exit 1; }
+            curl -fsS "http://${ORDER_ADDR}/metrics"     || { echo "Order service failed"; exit 1; }
+
+            echo "[RELEASE] All services are reachable at external IPs."
           '''
         }
       }
