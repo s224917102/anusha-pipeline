@@ -1,7 +1,9 @@
+# week09/example-3/k8s/product-service.yaml
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: product-service
+  name: product-service-w09-aks
   labels:
     app: product-service
 spec:
@@ -14,20 +16,22 @@ spec:
       labels:
         app: product-service
       annotations:
-        prometheus.io/scrape: 'true'
-        prometheus.io/path: '/metrics'
-        prometheus.io/port: '8000'
+        prometheus.io/scrape: 'true' # Instruct Prometheus to scrape this pod
+        prometheus.io/path: '/metrics' # The path where metrics are exposed
+        prometheus.io/port: '8000' # The port where metrics are exposed on the container
     spec:
-      initContainers:
-      - name: wait-for-product-db
-        image: postgres:15
-        command: ['sh', '-c', 'until pg_isready -h product-db-service-w09-aks -U postgres; do echo "Waiting for product DB..."; sleep 5; done']
       containers:
       - name: product-service-container
-        image: docker.io/s224917102/product_service:latest
+        image: anushaweek09acr.azurecr.io/product_service:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
         env:
         - name: POSTGRES_HOST
           value: product-db-service-w09-aks
@@ -46,27 +50,31 @@ spec:
             secretKeyRef:
               name: ecomm-secrets-w09-aks
               key: POSTGRES_PASSWORD
-
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 25
-          periodSeconds: 5
-          failureThreshold: 10
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 50
-          periodSeconds: 10
-          failureThreshold: 5
-
+        - name: AZURE_STORAGE_ACCOUNT_NAME
+          valueFrom:
+            secretKeyRef:
+              name: ecomm-secrets-w09-aks
+              key: AZURE_STORAGE_ACCOUNT_NAME
+        - name: AZURE_STORAGE_ACCOUNT_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ecomm-secrets-w09-aks
+              key: AZURE_STORAGE_ACCOUNT_KEY
+        - name: AZURE_STORAGE_CONTAINER_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: ecomm-config-w09-aks
+              key: AZURE_STORAGE_CONTAINER_NAME
+        - name: AZURE_SAS_TOKEN_EXPIRY_HOURS
+          valueFrom:
+            configMapKeyRef:
+              name: ecomm-config-w09-aks
+              key: AZURE_SAS_TOKEN_EXPIRY_HOURS
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: product-service
+  name: product-service-w09-aks
   labels:
     app: product-service
 spec:

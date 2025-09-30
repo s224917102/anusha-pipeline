@@ -1,3 +1,5 @@
+# week09/example-3/k8s/order-service.yaml
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,25 +16,22 @@ spec:
       labels:
         app: order-service
       annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/path: "/metrics"
-        prometheus.io/port: "8000"
+        prometheus.io/scrape: 'true' # Instruct Prometheus to scrape this pod
+        prometheus.io/path: '/metrics' # The path where metrics are exposed
+        prometheus.io/port: '8000' # The port where metrics are exposed on the container
     spec:
-      initContainers:
-      - name: wait-for-order-db
-        image: postgres:15
-        command: ['sh', '-c', 'until pg_isready -h order-db-service-w09-aks -U postgres; do echo "Waiting for order DB..."; sleep 5; done']
-
-      - name: wait-for-product-service
-        image: curlimages/curl:8.8.0
-        command: ['sh', '-c', 'until curl -fs http://product-service:8000/health; do echo "Waiting for Product Service..."; sleep 5; done']
-
       containers:
       - name: order-service-container
-        image: docker.io/s224917102/order_service:latest
+        image: docker.io/s224917102/order_service:latest # added imagename
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
         env:
         - name: POSTGRES_HOST
           value: order-db-service-w09-aks
@@ -56,7 +55,6 @@ spec:
             configMapKeyRef:
               name: ecomm-config-w09-aks
               key: PRODUCT_SERVICE_URL
-
 ---
 apiVersion: v1
 kind: Service

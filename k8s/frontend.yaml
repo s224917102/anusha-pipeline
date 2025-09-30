@@ -1,3 +1,5 @@
+# week08/k8s/frontend.yaml
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,45 +15,23 @@ spec:
     metadata:
       labels:
         app: frontend
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/path: "/metrics"
-        prometheus.io/port: "80"   # Nginx exposes metrics if configured on port 80
     spec:
       containers:
-        - name: frontend-container
-          image: docker.io/s224917102/frontend:latest
-          imagePullPolicy: Always
-          ports:
-            - containerPort: 80
-          securityContext:
-            runAsNonRoot: true
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
-
-          readinessProbe:
-            httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 20
-            periodSeconds: 5
-            failureThreshold: 10
-
-          livenessProbe:
-            httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 40
-            periodSeconds: 10
-            failureThreshold: 5
-
----
+      - name: frontend-container
+        image: docker.io/s224917102/order_service:latest
+        imagePullPolicy: Always
+        ports:
+          - containerPort: 80
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
 apiVersion: v1
 kind: Service
 metadata:
-  name: frontend
+  name: frontend # Service name matches
   labels:
     app: frontend
 spec:
@@ -59,6 +39,6 @@ spec:
     app: frontend
   ports:
     - protocol: TCP
-      port: 3001       # external port exposed via LB
-      targetPort: 80   # container port
-  type: LoadBalancer
+      port: 80 # The port the service listens on inside the cluster
+      targetPort: 80 # The port on the Pod (containerPort where Nginx runs)
+  type: LoadBalancer # Exposes the service on a port on each Node's IP
