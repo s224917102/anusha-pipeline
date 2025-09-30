@@ -360,25 +360,33 @@ pipeline {
                 svc="$1"; ns="$2"
                 ip=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
                 host=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-                port=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
+                port=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
 
                 if [ -n "$ip" ]; then
-                    echo "$ip"
+                    echo "${ip}:${port}"
                 elif [ -n "$host" ]; then
-                    echo "$host"
-                elif [ -n "$port" ]; then
-                    echo "localhost:$port"
+                    echo "${host}:${port}"
                 else
                     echo ""
                 fi
                 }
 
-                SERVICES=(product-service order-service frontend prometheus-service grafana-service)
-                for svc in "${SERVICES[@]}"; do
+                declare -A SERVICE_PORTS=(
+                [product-service]=8000
+                [order-service]=8001
+                [frontend]=3001
+                [prometheus-service]=80
+                [grafana-service]=80
+                )
+
+                declare -A SERVICE_ADDRS
+
+                for svc in "${!SERVICE_PORTS[@]}"; do
                 echo "Waiting for $svc address..."
                 for i in $(seq 1 60); do
                     addr=$(get_svc_address "$svc" ${NAMESPACE})
                     if [ -n "$addr" ]; then
+                    SERVICE_ADDRS[$svc]="$addr"
                     echo "[RELEASE] $svc available at $addr"
                     break
                     fi
@@ -389,10 +397,24 @@ pipeline {
 
                 echo "[RELEASE] Kubernetes release complete."
                 kubectl get svc -n ${NAMESPACE}
+
+                echo "[RELEASE] Checking connectivity of all services..."
+                for svc in "${!SERVICE_ADDRS[@]}"; do
+                addr=${SERVICE_ADDRS[$svc]}
+                echo " - Curling $svc at http://$addr"
+                if ! curl -fsS "http://$addr" >/dev/null; then
+                    echo "[RELEASE][ERROR] $svc not reachable at http://$addr"
+                    exit 1
+                fi
+                done
+
+                echo "[RELEASE] All services are reachable."
             '''
             }
         }
     }
+
+
 
 
     stage('Monitoring') {
