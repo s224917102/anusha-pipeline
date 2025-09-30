@@ -316,7 +316,7 @@ pipeline {
     stage('Release') {
         steps {
             withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-            sh '''#!/usr/bin/env bash
+                sh '''#!/usr/bin/env bash
                 set -euo pipefail
 
                 echo "[RELEASE] Login & push images"
@@ -372,26 +372,21 @@ pipeline {
                   fi
                 }
 
-                # Explicitly quote keys
+                # ✅ FIXED: quote all keys in associative array
                 declare -A SERVICE_PORTS=(
-                  ["product-service"]=8000
-                  ["order-service"]=8001
-                  ["frontend"]=3001
-                  ["prometheus-service"]=9090
-                  ["grafana-service"]=3000
+                  ["product-service"]="8000"
+                  ["order-service"]="8001"
+                  ["frontend"]="3001"
+                  ["prometheus-service"]="9090"
+                  ["grafana-service"]="3000"
                 )
 
-                # Initialize SERVICE_ADDRS with empty strings
                 declare -A SERVICE_ADDRS=()
-                for svc in "${!SERVICE_PORTS[@]}"; do
-                  SERVICE_ADDRS["$svc"]=""
-                done
 
-                # Try to resolve addresses
                 for svc in "${!SERVICE_PORTS[@]}"; do
                   echo "Waiting for $svc address..."
                   for i in $(seq 1 60); do
-                    addr="$(get_svc_address "$svc" "${NAMESPACE}" || true)"
+                    addr="$(get_svc_address "$svc" ${NAMESPACE} || echo "")"
                     if [ -n "$addr" ]; then
                       SERVICE_ADDRS["$svc"]="$addr"
                       echo "[RELEASE] $svc available at $addr"
@@ -400,10 +395,9 @@ pipeline {
                     echo "Attempt $i: still pending..."
                     sleep 5
                   done
-
-                  # Fallback to NodePort if no LoadBalancer
+                  # Default to localhost:NodePort if MetalLB didn’t assign IP
                   if [ -z "${SERVICE_ADDRS["$svc"]:-}" ]; then
-                    nodeport=$(kubectl get svc "$svc" -n "${NAMESPACE}" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
+                    nodeport=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
                     if [ -n "$nodeport" ]; then
                       SERVICE_ADDRS["$svc"]="localhost:${nodeport}"
                       echo "[RELEASE][FALLBACK] $svc using localhost:${nodeport}"
@@ -412,7 +406,7 @@ pipeline {
                 done
 
                 echo "[RELEASE] Kubernetes release complete."
-                kubectl get svc -n "${NAMESPACE}"
+                kubectl get svc -n ${NAMESPACE}
 
                 echo "[RELEASE] Checking connectivity of all services..."
                 for svc in "${!SERVICE_PORTS[@]}"; do
@@ -433,7 +427,6 @@ pipeline {
             }
         }
     }
-
 
     stage('Monitoring') {
       steps {
