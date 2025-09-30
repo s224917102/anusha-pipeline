@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
       - name: order-service-container
-        image: s224917102/order_service:${IMAGE_TAG} # added imagename
+        image: s224917102/order_service:latest # added imagename
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
