@@ -312,7 +312,6 @@ pipeline {
         '''
       }
     }
-
     stage('Release') {
         steps {
             withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
@@ -363,32 +362,31 @@ pipeline {
                   host=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
                   port=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
 
-                  if [ -n "${ip:-}" ]; then
+                  if [ -n "$ip" ]; then
                       echo "${ip}:${port}"
-                  elif [ -n "${host:-}" ]; then
+                  elif [ -n "$host" ]; then
                       echo "${host}:${port}"
                   else
                       echo ""
                   fi
                 }
 
+                # Service map (keys MUST match your K8s Service names)
                 declare -A SERVICE_PORTS=(
-                  [product-service]=8000
-                  [order-service]=8001
-                  [frontend]=3001
-                  [prometheus-service]=9090
-                  [grafana-service]=3000
+                  ["product-service"]=8000
+                  ["order-service"]=8001
+                  ["frontend"]=3001
+                  ["prometheus-service"]=9090
+                  ["grafana-service"]=3000
                 )
 
-                # initialize addresses to avoid unbound errors
-                declare -A SERVICE_ADDRS=(
-                  [product-service]=""
-                  [order-service]=""
-                  [frontend]=""
-                  [prometheus-service]=""
-                  [grafana-service]=""
-                )
+                # Initialize addresses
+                declare -A SERVICE_ADDRS
+                for k in "${!SERVICE_PORTS[@]}"; do
+                  SERVICE_ADDRS["$k"]=""
+                done
 
+                # Wait for IP/host from MetalLB or fallback to NodePort
                 for svc in "${!SERVICE_PORTS[@]}"; do
                   echo "Waiting for $svc address..."
                   for i in $(seq 1 60); do
@@ -401,8 +399,8 @@ pipeline {
                     echo "Attempt $i: still pending..."
                     sleep 5
                   done
-                  # fallback to NodePort if no LB IP
-                  if [ -z "${SERVICE_ADDRS[$svc]:-}" ]; then
+
+                  if [ -z "${SERVICE_ADDRS["$svc"]:-}" ]; then
                     nodeport=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
                     if [ -n "${nodeport:-}" ]; then
                       SERVICE_ADDRS["$svc"]="localhost:${nodeport}"
@@ -416,8 +414,8 @@ pipeline {
 
                 echo "[RELEASE] Checking connectivity of all services..."
                 for svc in "${!SERVICE_PORTS[@]}"; do
-                  addr="${SERVICE_ADDRS[$svc]:-}"
-                  if [ -z "${addr:-}" ]; then
+                  addr="${SERVICE_ADDRS["$svc"]:-}"
+                  if [ -z "$addr" ]; then
                     echo "[RELEASE][ERROR] $svc has no external address"
                     exit 1
                   fi
