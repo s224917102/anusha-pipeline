@@ -341,8 +341,8 @@ pipeline {
             done
 
             # Replace :latest with ${IMAGE_TAG} before apply
-            sed "s|:latest|:${IMAGE_TAG}|g" product-service.yaml | kubectl apply -n ${NAMESPACE} -f -
-            sed "s|:latest|:${IMAGE_TAG}|g" order-service.yaml   | kubectl apply -n ${NAMESPACE} -f -
+            kubectl apply -n ${NAMESPACE} -f product-service.yaml
+            kubectl apply -n ${NAMESPACE} -f order-service.yaml 
 
             echo "Waiting for Product, Order LoadBalancer IPs to be assigned (up to 5 minutes)..."
             PRODUCT_IP=""
