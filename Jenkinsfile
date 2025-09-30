@@ -363,9 +363,9 @@ pipeline {
                   host=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
                   port=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
 
-                  if [ -n "$ip" ]; then
+                  if [ -n "${ip:-}" ]; then
                       echo "${ip}:${port}"
-                  elif [ -n "$host" ]; then
+                  elif [ -n "${host:-}" ]; then
                       echo "${host}:${port}"
                   else
                       echo ""
@@ -385,9 +385,9 @@ pipeline {
                 for svc in "${!SERVICE_PORTS[@]}"; do
                   echo "Waiting for $svc address..."
                   for i in $(seq 1 60); do
-                    addr="$(get_svc_address "$svc" ${NAMESPACE} || echo "")"
-                    if [ -n "$addr" ]; then
-                      SERVICE_ADDRS[$svc]="$addr"
+                    addr="$(get_svc_address "$svc" ${NAMESPACE} || true)"
+                    if [ -n "${addr:-}" ]; then
+                      SERVICE_ADDRS["$svc"]="$addr"
                       echo "[RELEASE] $svc available at $addr"
                       break
                     fi
@@ -397,8 +397,8 @@ pipeline {
                   # Default to localhost:NodePort if MetalLB didn’t assign IP
                   if [ -z "${SERVICE_ADDRS[$svc]:-}" ]; then
                     nodeport=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
-                    if [ -n "$nodeport" ]; then
-                      SERVICE_ADDRS[$svc]="localhost:${nodeport}"
+                    if [ -n "${nodeport:-}" ]; then
+                      SERVICE_ADDRS["$svc"]="localhost:${nodeport}"
                       echo "[RELEASE][FALLBACK] $svc using localhost:${nodeport}"
                     fi
                   fi
@@ -410,7 +410,7 @@ pipeline {
                 echo "[RELEASE] Checking connectivity of all services..."
                 for svc in "${!SERVICE_PORTS[@]}"; do
                   addr="${SERVICE_ADDRS[$svc]:-}"
-                  if [ -z "$addr" ]; then
+                  if [ -z "${addr:-}" ]; then
                     echo "[RELEASE][ERROR] $svc has no external address"
                     exit 1
                   fi
@@ -426,6 +426,7 @@ pipeline {
             }
         }
     }
+
 
     stage('Monitoring') {
       steps {
