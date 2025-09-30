@@ -18,6 +18,10 @@ spec:
         prometheus.io/path: '/metrics'
         prometheus.io/port: '8000'
     spec:
+      initContainers:
+      - name: wait-for-product-db
+        image: postgres:15
+        command: ['sh', '-c', 'until pg_isready -h product-db-service-w09-aks -U postgres; do echo "Waiting for product DB..."; sleep 5; done']
       containers:
       - name: product-service-container
         image: docker.io/s224917102/product_service:latest
@@ -47,14 +51,14 @@ spec:
           httpGet:
             path: /health
             port: 8000
-          initialDelaySeconds: 25       # give the app more startup time
+          initialDelaySeconds: 25
           periodSeconds: 5
-          failureThreshold: 10          # tolerate up to 10 failures (50s)
+          failureThreshold: 10
         livenessProbe:
           httpGet:
             path: /health
             port: 8000
-          initialDelaySeconds: 50       # allow time before killing container
+          initialDelaySeconds: 50
           periodSeconds: 10
           failureThreshold: 5
 

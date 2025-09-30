@@ -16,66 +16,46 @@ spec:
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/path: "/metrics"
-        prometheus.io/port: "8080"        # container listens on 8080
+        prometheus.io/port: "8000"
     spec:
-      securityContext:
-        seccompProfile:
-          type: RuntimeDefault
+      initContainers:
+      - name: wait-for-order-db
+        image: postgres:15
+        command: ['sh', '-c', 'until pg_isready -h order-db-service-w09-aks -U postgres; do echo "Waiting for order DB..."; sleep 5; done']
+
+      - name: wait-for-product-service
+        image: curlimages/curl:8.8.0
+        command: ['sh', '-c', 'until curl -fs http://product-service:8000/health; do echo "Waiting for Product Service..."; sleep 5; done']
+
       containers:
-        - name: order-service-container
-          image: docker.io/s224917102/order_service:latest
-          imagePullPolicy: Always
-          ports:
-            - containerPort: 8000
-          env:
-            - name: POSTGRES_HOST
-              value: order-db-service-w09-aks
-            - name: POSTGRES_DB
-              valueFrom:
-                configMapKeyRef:
-                  name: ecomm-config-w09-aks
-                  key: ORDERS_DB_NAME
-            - name: POSTGRES_USER
-              valueFrom:
-                secretKeyRef:
-                  name: ecomm-secrets-w09-aks
-                  key: POSTGRES_USER
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: ecomm-secrets-w09-aks
-                  key: POSTGRES_PASSWORD
-            - name: PRODUCT_SERVICE_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: ecomm-config-w09-aks
-                  key: PRODUCT_SERVICE_URL
-          securityContext:
-            runAsNonRoot: true
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8000
-            initialDelaySeconds: 25
-            periodSeconds: 5
-            failureThreshold: 10
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8000
-            initialDelaySeconds: 50
-            periodSeconds: 10
-            failureThreshold: 5
-      volumes:
-        - name: tmp
-          emptyDir: {}
+      - name: order-service-container
+        image: docker.io/s224917102/order_service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+        - name: POSTGRES_HOST
+          value: order-db-service-w09-aks
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: ecomm-config-w09-aks
+              key: ORDERS_DB_NAME
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: ecomm-secrets-w09-aks
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ecomm-secrets-w09-aks
+              key: POSTGRES_PASSWORD
+        - name: PRODUCT_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: ecomm-config-w09-aks
+              key: PRODUCT_SERVICE_URL
 
 ---
 apiVersion: v1
@@ -89,6 +69,6 @@ spec:
     app: order-service
   ports:
     - protocol: TCP
-      port: 8001       # external LB/ClusterIP port
-      targetPort: 8080 # container port
+      port: 8001
+      targetPort: 8000
   type: LoadBalancer
