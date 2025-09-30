@@ -323,7 +323,7 @@ pipeline {
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
 
             for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-              echo "Pushing $img:${IMAGE_TAG}, $img:latest"
+              echo "Pushing $img:${IMAGE_TAG}, $img:latest, $img:${RELEASE_TAG}"
               docker push $img:${IMAGE_TAG}
               docker tag  $img:${IMAGE_TAG} $img:latest
               docker push $img:latest
@@ -333,16 +333,16 @@ pipeline {
             kubectl config use-context ${KUBE_CONTEXT}
             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-            # Apply configs
             for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
               [ -f "$f" ] && kubectl apply -n ${NAMESPACE} -f "$f"
             done
 
-            # Replace :latest with ${IMAGE_TAG} before apply
-            kubectl apply -n ${NAMESPACE} -f product-service.yaml
-            kubectl apply -n ${NAMESPACE} -f order-service.yaml 
+            # Replace :latest with ${IMAGE_TAG}
+            sed "s|:latest|:${IMAGE_TAG}|g" product-service.yaml | kubectl apply -n ${NAMESPACE} -f -
+            sed "s|:latest|:${IMAGE_TAG}|g" order-service.yaml   | kubectl apply -n ${NAMESPACE} -f -
+            sed "s|:latest|:${IMAGE_TAG}|g" frontend.yaml        | kubectl apply -n ${NAMESPACE} -f -
 
-            echo "Waiting for Product, Order LoadBalancer IPs to be assigned (up to 5 minutes)..."
+            echo "Waiting for Product, Order LoadBalancer IPs..."
             PRODUCT_IP=""
             ORDER_IP=""
 
@@ -370,7 +370,6 @@ pipeline {
         }
       }
     }
-
 
     stage('Monitoring') {
       steps {
