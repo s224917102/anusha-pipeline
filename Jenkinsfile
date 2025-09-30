@@ -384,7 +384,7 @@ pipeline {
                 for svc in "${!SERVICE_PORTS[@]}"; do
                 echo "Waiting for $svc address..."
                 for i in $(seq 1 60); do
-                    addr=$(get_svc_address "$svc" "$NAMESPACE")
+                    addr=$(get_svc_address "$svc" "$NAMESPACE" || echo "")
                     if [ -n "$addr" ]; then
                     SERVICE_ADDRS[$svc]="$addr"
                     echo "[RELEASE] $svc available at $addr"
@@ -400,9 +400,9 @@ pipeline {
 
                 echo "[RELEASE] Checking connectivity of all services..."
                 for svc in "${!SERVICE_ADDRS[@]}"; do
-                addr=${SERVICE_ADDRS[$svc]}
+                addr="${SERVICE_ADDRS[$svc]:-}"
                 echo " - Curling $svc at http://$addr"
-                if ! curl -fsS "http://$addr" >/dev/null; then
+                if [ -z "$addr" ] || ! curl -fsS "http://$addr" >/dev/null; then
                     echo "[RELEASE][ERROR] $svc not reachable at http://$addr"
                     exit 1
                 fi
@@ -413,6 +413,7 @@ pipeline {
             }
         }
     }
+
 
     stage('Monitoring') {
       steps {
