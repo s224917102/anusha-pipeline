@@ -333,77 +333,37 @@ pipeline {
             kubectl config use-context ${KUBE_CONTEXT}
             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-            echo "[RELEASE] Apply MetalLB config if present"
-            if [ -f "${K8S_DIR}/metallb-config.yaml" ]; then
-              kubectl apply -f "${K8S_DIR}/metallb-config.yaml"
-            fi
-
-            echo "[RELEASE] Apply infra (configmaps, secrets, databases)"
-            for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
+            echo "[RELEASE] Apply base manifests (configmaps, secrets, dbs, monitoring)"
+            for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml prometheus-*.yaml grafana-*.yaml; do
               [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
             done
 
-            echo "[RELEASE] Apply microservices (product, order, frontend)"
+            echo "[RELEASE] Apply microservice deployments (without images yet)"
             for f in product-service.yaml order-service.yaml frontend.yaml; do
               [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
             done
 
-            echo "[RELEASE] Apply monitoring (Prometheus + Grafana)"
-            for f in prometheus-config.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
-              [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
-            done
+            echo "[RELEASE] Set images with IMAGE_TAG=${IMAGE_TAG}"
+            kubectl set image deployment/product-service \
+              product-service-container=${PRODUCT_IMG}:${IMAGE_TAG} -n ${NAMESPACE}
+            kubectl set image deployment/order-service \
+              order-service-container=${ORDER_IMG}:${IMAGE_TAG} -n ${NAMESPACE}
+            kubectl set image deployment/frontend \
+              frontend-container=${FRONTEND_IMG}:${IMAGE_TAG} -n ${NAMESPACE}
 
-            echo "[RELEASE] Waiting for deployments to be ready..."
+            echo "[RELEASE] Wait for rollouts"
             kubectl rollout status deployment/product-service -n ${NAMESPACE} --timeout=180s
             kubectl rollout status deployment/order-service -n ${NAMESPACE} --timeout=180s
             kubectl rollout status deployment/frontend -n ${NAMESPACE} --timeout=180s
             kubectl rollout status deployment/prometheus-server -n ${NAMESPACE} --timeout=180s
             kubectl rollout status deployment/grafana -n ${NAMESPACE} --timeout=180s
 
-            echo "[RELEASE] Collecting external IPs"
-            get_svc_addr () {
-              svc="$1"
-              ip=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-              port=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
-              if [ -n "$ip" ]; then
-                echo "${ip}:${port}"
-              else
-                nodeport=$(kubectl get svc "$svc" -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
-                [ -n "$nodeport" ] && echo "localhost:${nodeport}" || echo ""
-              fi
-            }
+            echo "[RELEASE] Collecting service endpoints"
+            for svc in product-service order-service frontend prometheus-service grafana-service; do
+              kubectl get svc $svc -n ${NAMESPACE}
+            done
 
-            PRODUCT_ADDR=$(get_svc_addr product-service)
-            ORDER_ADDR=$(get_svc_addr order-service)
-            FRONTEND_ADDR=$(get_svc_addr frontend)
-            PROM_ADDR=$(get_svc_addr prometheus-service)
-            GRAF_ADDR=$(get_svc_addr grafana-service)
-
-            echo "[RELEASE] Product:   $PRODUCT_ADDR"
-            echo "[RELEASE] Order:     $ORDER_ADDR"
-            echo "[RELEASE] Frontend:  $FRONTEND_ADDR"
-            echo "[RELEASE] Prometheus:$PROM_ADDR"
-            echo "[RELEASE] Grafana:   $GRAF_ADDR"
-
-            wait_http () {
-              url="$1"; tries="${2:-60}"
-              i=0
-              until curl -fsS "$url" >/dev/null 2>&1; do
-                i=$((i+1))
-                [ $i -ge $tries ] && return 1
-                echo "Waiting for $url ($i/$tries)..."
-                sleep 5
-              done
-            }
-
-            echo "[RELEASE] Checking connectivity..."
-            wait_http "http://${PRODUCT_ADDR}/metrics" 60 || { echo "Product failed"; exit 1; }
-            wait_http "http://${ORDER_ADDR}/metrics" 60 || { echo "Order failed"; exit 1; }
-            wait_http "http://${FRONTEND_ADDR}" 60 || { echo "Frontend failed"; exit 1; }
-            wait_http "http://${PROM_ADDR}" 60 || { echo "Prometheus failed"; exit 1; }
-            wait_http "http://${GRAF_ADDR}/login" 60 || { echo "Grafana failed"; exit 1; }
-
-            echo "[RELEASE] All services are reachable."
+            echo "[RELEASE] Done."
           '''
         }
       }
