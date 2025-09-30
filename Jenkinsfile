@@ -349,7 +349,7 @@ stage('Deploy') {
                 done
 
                 echo "[RELEASE] Apply monitoring (Prometheus + Grafana)"
-                for f in prometheus-config.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
+                for f in prometheus-configmap.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
                 [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
                 done
 
@@ -391,7 +391,90 @@ stage('Deploy') {
             }
         }
     }
+
+    stage('Monitoring & Alerting (Prometheus)') {
+      environment {
+        KUBECONFIG = '/var/jenkins_home/.kube/config'
+        COUNT      = '50'      // number of requests to generate
+        WIN        = '1m'      // Prometheus query window
+      }
+      steps {
+        writeFile file: 'monitor-prom.sh', text: '''
+          #!/usr/bin/env bash
+          set -euo pipefail
+          export KUBECONFIG="${KUBECONFIG}"
+
+          echo "== Get Prometheus Service =="
+          PROM_URL=$(kubectl get svc prometheus-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+          if [ -z "$PROM_URL" ]; then
+            # fallback to NodePort
+            NODEPORT=$(kubectl get svc prometheus-service -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}')
+            PROM_URL="http://localhost:${NODEPORT}"
+          else
+            PROM_URL="http://${PROM_URL}"
+          fi
+          echo "Prometheus UI: ${PROM_URL}"
+
+          # Get product & order endpoints
+          PRODUCT_URL=$(kubectl get svc product-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          ORDER_URL=$(kubectl get svc order-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+          if [ -z "$PRODUCT_URL" ]; then
+            PRODUCT_URL="localhost:$(kubectl get svc product-service -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}')"
+          fi
+          if [ -z "$ORDER_URL" ]; then
+            ORDER_URL="localhost:$(kubectl get svc order-service -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}')"
+          fi
+
+          echo "Product metrics at: http://${PRODUCT_URL}/metrics"
+          echo "Order metrics at:   http://${ORDER_URL}/metrics"
+
+          echo "== Generate traffic =="
+          for i in $(seq 1 ${COUNT}); do
+            curl -s "http://${PRODUCT_URL}/" >/dev/null || true
+            curl -s "http://${ORDER_URL}/" >/dev/null || true
+          done
+          sleep 10  # allow scrape
+
+          echo "== Prometheus queries =="
+
+          PRODUCT_REQ=$(curl -fsSG "${PROM_URL}/api/v1/query" \
+            --data-urlencode "query=sum(increase(http_requests_total{app_name=\\"product_service\\"}[${WIN}]))" \
+            | jq -r '.data.result[0].value[1] // "0"')
+
+          ORDER_REQ=$(curl -fsSG "${PROM_URL}/api/v1/query" \
+            --data-urlencode "query=sum(increase(http_requests_total{app_name=\\"order_service\\"}[${WIN}]))" \
+            | jq -r '.data.result[0].value[1] // "0"')
+
+          ORDER_RATE=$(curl -fsSG "${PROM_URL}/api/v1/query" \
+            --data-urlencode "query=rate(order_creation_total{app_name=\\"order_service\\"}[${WIN}])" \
+            | jq -r '.data.result[0].value[1] // "0"')
+
+          TARGETS=$(curl -fsS "${PROM_URL}/api/v1/targets" \
+            | jq -r '.data.activeTargets[]? | "\\(.labels.job) @ \\(.labels.instance): \\(.health)"')
+
+          cat > metrics_prom_summary.txt <<EOF
+          Prometheus Monitoring Summary
+          =============================
+          Window     : ${WIN}
+          Requests   : Product=${PRODUCT_REQ}, Order=${ORDER_REQ}
+          Order Rate : ${ORDER_RATE} req/s
+
+          Active targets:
+          ${TARGETS}
+
+          Prometheus UI: ${PROM_URL}
+          EOF
+        '''
+        sh 'chmod +x monitor-prom.sh && ./monitor-prom.sh'
+        archiveArtifacts artifacts: 'metrics_prom_summary.txt', allowEmptyArchive: false
+      }
+    }
+
+
   }
+
+
   post {
     success { echo "Pipeline succeeded - ${IMAGE_TAG} (${RELEASE_TAG})" }
     failure { echo "Pipeline failed - see logs." }
