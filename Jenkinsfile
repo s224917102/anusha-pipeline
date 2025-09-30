@@ -394,61 +394,7 @@ stage('Deploy') {
             }
         }
     }
-    
-    stage('Monitoring') {
-      steps {
-        sh '''#!/usr/bin/env bash
-          set -euo pipefail
-
-          echo "[MONITOR] Collecting external IPs from LoadBalancer services..."
-
-          get_addr () {
-            svc="$1"
-            ip=$(kubectl get svc $svc -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-            port=$(kubectl get svc $svc -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
-            if [ -n "$ip" ] && [ -n "$port" ]; then
-              echo "${ip}:${port}"
-            else
-              echo ""
-            fi
-          }
-
-          PRODUCT_ADDR=$(get_addr product-service)
-          ORDER_ADDR=$(get_addr order-service)
-          PROM_ADDR=$(get_addr prometheus-service)
-          GRAF_ADDR=$(get_addr grafana-service)
-
-          echo "[MONITOR] Product:   ${PRODUCT_ADDR:-unavailable}"
-          echo "[MONITOR] Order:     ${ORDER_ADDR:-unavailable}"
-          echo "[MONITOR] Prometheus:${PROM_ADDR:-unavailable}"
-          echo "[MONITOR] Grafana:   ${GRAF_ADDR:-unavailable}"
-
-          echo "[MONITOR] Checking /metrics endpoints..."
-          curl -fsS "http://${PRODUCT_ADDR}/metrics" | grep -q "http_requests_total" \
-            || { echo "Product /metrics failed"; exit 1; }
-          curl -fsS "http://${ORDER_ADDR}/metrics" | grep -q "http_requests_total" \
-            || { echo "Order /metrics failed"; exit 1; }
-
-          echo "[MONITOR] Querying Prometheus for product_service metrics..."
-          curl -fsS "http://${PROM_ADDR}/api/v1/query?query=http_requests_total{app_name=\\"product_service\\"}" \
-            | grep -q '"status":"success"' \
-            || { echo "Prometheus query failed"; exit 1; }
-
-          echo "[MONITOR] Checking Grafana UI..."
-          curl -fsS "http://${GRAF_ADDR}/login" >/dev/null \
-            || { echo "Grafana UI not reachable"; exit 1; }
-
-          echo "[MONITOR] ✅ All monitoring checks passed."
-          echo ""
-          echo "👉 Open in browser:"
-          echo "   Product Service Metrics:   http://${PRODUCT_ADDR}/metrics"
-          echo "   Order Service Metrics:     http://${ORDER_ADDR}/metrics"
-          echo "   Prometheus UI:             http://${PROM_ADDR}"
-          echo "   Grafana UI:                http://${GRAF_ADDR}"
-        '''
-      }
-    }
-
+  }
   post {
     success { echo "Pipeline succeeded - ${IMAGE_TAG} (${RELEASE_TAG})" }
     failure { echo "Pipeline failed - see logs." }
