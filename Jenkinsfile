@@ -333,6 +333,13 @@ stage('Deploy') {
                 kubectl config use-context ${KUBE_CONTEXT}
                 kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
+                echo "[RELEASE] Apply MetalLB config if present"
+                if [ -f "${K8S_DIR}/metallb-config.yaml" ]; then
+                kubectl apply -f "${K8S_DIR}/metallb-config.yaml"
+                else
+                echo "[RELEASE][WARN] No metallb-config.yaml found in ${K8S_DIR}, skipping"
+                fi
+
                 echo "[RELEASE] Apply infra (configmaps, secrets, databases)"
                 for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
                 [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
@@ -386,6 +393,7 @@ stage('Deploy') {
             }
         }
     }
+
 
     stage('Monitoring') {
       steps {
