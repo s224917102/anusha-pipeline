@@ -375,8 +375,8 @@ pipeline {
                 [product-service]=8000
                 [order-service]=8001
                 [frontend]=3001
-                [prometheus-service]=80
-                [grafana-service]=80
+                [prometheus-service]=9090
+                [grafana-service]=3000
                 )
 
                 declare -A SERVICE_ADDRS
@@ -384,7 +384,7 @@ pipeline {
                 for svc in "${!SERVICE_PORTS[@]}"; do
                 echo "Waiting for $svc address..."
                 for i in $(seq 1 60); do
-                    addr=$(get_svc_address "$svc" ${NAMESPACE})
+                    addr=$(get_svc_address "$svc" "$NAMESPACE")
                     if [ -n "$addr" ]; then
                     SERVICE_ADDRS[$svc]="$addr"
                     echo "[RELEASE] $svc available at $addr"
@@ -413,9 +413,6 @@ pipeline {
             }
         }
     }
-
-
-
 
     stage('Monitoring') {
       steps {
