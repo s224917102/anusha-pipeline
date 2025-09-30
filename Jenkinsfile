@@ -323,12 +323,10 @@ pipeline {
             echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
 
             for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-              echo "Pushing $img:${IMAGE_TAG}, $img:latest, $img:${RELEASE_TAG}"
+              echo "Pushing $img:${IMAGE_TAG}, $img:latest"
               docker push $img:${IMAGE_TAG}
               docker tag  $img:${IMAGE_TAG} $img:latest
               docker push $img:latest
-              docker tag  $img:${IMAGE_TAG} $img:${RELEASE_TAG}
-              docker push $img:${RELEASE_TAG}
             done
 
             echo "[RELEASE] Apply manifests with IMAGE_TAG=${IMAGE_TAG}"
