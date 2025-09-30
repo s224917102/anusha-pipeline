@@ -395,82 +395,79 @@ stage('Deploy') {
     stage('Monitoring & Alerting (Prometheus)') {
       environment {
         KUBECONFIG = '/var/jenkins_home/.kube/config'
-        COUNT      = '50'      // number of requests to generate
-        WIN        = '1m'      // Prometheus query window
+        COUNT      = '30'   // number of requests to generate
+        WIN        = '5m'   // Prometheus query window
       }
       steps {
-        writeFile file: 'monitor-prom.sh', text: '''
-          #!/usr/bin/env bash
+        sh '''#!/usr/bin/env bash
           set -euo pipefail
           export KUBECONFIG="${KUBECONFIG}"
 
-          echo "== Get Prometheus Service =="
-          PROM_URL=$(kubectl get svc prometheus-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-          if [ -z "$PROM_URL" ]; then
-            # fallback to NodePort
-            NODEPORT=$(kubectl get svc prometheus-service -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}')
-            PROM_URL="http://localhost:${NODEPORT}"
-          else
-            PROM_URL="http://${PROM_URL}"
+          echo "== Resolving Prometheus EXTERNAL-IP (MetalLB) =="
+          PROM_IP=$(kubectl get svc prometheus-service -n ${NAMESPACE} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+
+          if [ -z "$PROM_IP" ]; then
+            echo "[ERROR] Prometheus service has no EXTERNAL-IP yet. Check MetalLB."
+            exit 1
           fi
-          echo "Prometheus UI: ${PROM_URL}"
+          PROM_URL="http://${PROM_IP}"
 
-          # Get product & order endpoints
-          PRODUCT_URL=$(kubectl get svc product-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          ORDER_URL=$(kubectl get svc order-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "Prometheus URL: $PROM_URL"
 
-          if [ -z "$PRODUCT_URL" ]; then
-            PRODUCT_URL="localhost:$(kubectl get svc product-service -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}')"
+          echo "== Generating traffic to Product and Order services =="
+          PRODUCT_IP=$(kubectl get svc product-service -n ${NAMESPACE} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+          ORDER_IP=$(kubectl get svc order-service -n ${NAMESPACE} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+
+          if [ -z "$PRODUCT_IP" ] || [ -z "$ORDER_IP" ]; then
+            echo "[ERROR] Product or Order service EXTERNAL-IP not ready."
+            exit 1
           fi
-          if [ -z "$ORDER_URL" ]; then
-            ORDER_URL="localhost:$(kubectl get svc order-service -n ${NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}')"
-          fi
 
-          echo "Product metrics at: http://${PRODUCT_URL}/metrics"
-          echo "Order metrics at:   http://${ORDER_URL}/metrics"
+          PRODUCT_METRICS="http://${PRODUCT_IP}:8000/metrics"
+          ORDER_METRICS="http://${ORDER_IP}:8001/metrics"
 
-          echo "== Generate traffic =="
-          for i in $(seq 1 ${COUNT}); do
-            curl -s "http://${PRODUCT_URL}/" >/dev/null || true
-            curl -s "http://${ORDER_URL}/" >/dev/null || true
-          done
-          sleep 10  # allow scrape
+          echo "Hitting product-service (${PRODUCT_METRICS}) ${COUNT} times..."
+          for i in $(seq 1 "${COUNT}"); do curl -s "${PRODUCT_IP}:8000/health" >/dev/null || true; done
 
-          echo "== Prometheus queries =="
+          echo "Hitting order-service (${ORDER_METRICS}) ${COUNT} times..."
+          for i in $(seq 1 "${COUNT}"); do curl -s "${ORDER_IP}:8001/health" >/dev/null || true; done
 
-          PRODUCT_REQ=$(curl -fsSG "${PROM_URL}/api/v1/query" \
+          echo "Traffic complete, waiting for Prometheus scrape..."
+          sleep 10
+
+          echo "== Querying Prometheus for metrics =="
+          # Product requests
+          PROD_REQ=$(curl -fsSG "${PROM_URL}/api/v1/query" \
             --data-urlencode "query=sum(increase(http_requests_total{app_name=\\"product_service\\"}[${WIN}]))" \
             | jq -r '.data.result[0].value[1] // "0"')
 
+          # Order requests
           ORDER_REQ=$(curl -fsSG "${PROM_URL}/api/v1/query" \
             --data-urlencode "query=sum(increase(http_requests_total{app_name=\\"order_service\\"}[${WIN}]))" \
             | jq -r '.data.result[0].value[1] // "0"')
 
+          # Order creation rate
           ORDER_RATE=$(curl -fsSG "${PROM_URL}/api/v1/query" \
-            --data-urlencode "query=rate(order_creation_total{app_name=\\"order_service\\"}[${WIN}])" \
+            --data-urlencode "query=rate(order_creation_total{app_name=\\"order_service\\"}[1m])" \
             | jq -r '.data.result[0].value[1] // "0"')
 
+          # Targets status
           TARGETS=$(curl -fsS "${PROM_URL}/api/v1/targets" \
             | jq -r '.data.activeTargets[]? | "\\(.labels.job) @ \\(.labels.instance): \\(.health)"')
 
-          cat > metrics_prom_summary.txt <<EOF
-          Prometheus Monitoring Summary
-          =============================
-          Window     : ${WIN}
-          Requests   : Product=${PRODUCT_REQ}, Order=${ORDER_REQ}
-          Order Rate : ${ORDER_RATE} req/s
-
-          Active targets:
-          ${TARGETS}
-
-          Prometheus UI: ${PROM_URL}
-          EOF
+          echo "== Monitoring Summary =="
+          echo "Prometheus : ${PROM_URL}"
+          echo "Product requests in ${WIN}: ${PROD_REQ}"
+          echo "Order requests in ${WIN}:   ${ORDER_REQ}"
+          echo "Order creation rate (/s):   ${ORDER_RATE}"
+          echo "Targets:"
+          echo "${TARGETS}" | sed 's/^/  - /'
         '''
-        sh 'chmod +x monitor-prom.sh && ./monitor-prom.sh'
-        archiveArtifacts artifacts: 'metrics_prom_summary.txt', allowEmptyArchive: false
       }
     }
-
 
   }
 
