@@ -1,9 +1,10 @@
-FROM python:3.10-alpine3.22
+FROM python:3.13-alpine3.22
 
 WORKDIR /code
 
-# Update system packages for security fixes
-RUN apk update && apk upgrade
+# Upgrade base packages (with --no-cache, avoids caching index files)
+
+RUN apk --no-cache upgrade
 
 # Install build dependencies for psycopg2 and other packages
 RUN apk add --no-cache gcc musl-dev linux-headers postgresql-dev libffi-dev

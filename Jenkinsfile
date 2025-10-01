@@ -252,60 +252,52 @@ pipeline {
         archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
       }
     }
-/* ======================================================================== */
-stage('Deploy') {
-  steps {
-    sh '''#!/usr/bin/env bash
-      set -euo pipefail
+    
+    /* ======================================================================== */
+    stage('Deploy') {
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
 
-      compose () {
-        if docker compose version >/dev/null 2>&1; then
-          docker compose "$@"
-        else
-          docker-compose "$@"
-        fi
+          compose () {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
+            else
+              docker-compose "$@"
+            fi
+          }
+
+          echo "[DEPLOY] Cleaning up old containers..."
+          # Remove stopped containers system-wide (safe for fixed names)
+          docker container prune -f || true
+
+          echo "[DEPLOY] Rolling out staging environment (recreate if needed)..."
+          IMAGE_TAG=${IMAGE_TAG} \
+            compose up -d --force-recreate --remove-orphans --renew-anon-volumes
+
+          compose ps || true
+
+          echo "[DEPLOY] Running health checks..."
+          FAIL=0
+
+          curl -fsS http://localhost:3001/ || { echo " Frontend failed"; FAIL=1; }
+          curl -fsS http://localhost:9090/-/healthy || { echo " Prometheus failed"; FAIL=1; }
+          curl -fsS http://localhost:3000/login || { echo " Grafana failed"; FAIL=1; }
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "[DEPLOY][ERROR] One or more services unhealthy. Rolling back to :latest."
+            mkdir -p reports
+            compose logs --no-color > reports/compose-failed.log || true
+            IMAGE_TAG=latest \
+              compose up -d --force-recreate --remove-orphans || true
+            exit 1
+          fi
+
+          echo "[DEPLOY] Staging environment is healthy."
+        '''
       }
+    }
 
-      echo "[DEPLOY] Cleaning up old containers with fixed names..."
-      docker rm -f \
-        product_api_container \
-        order_api_container \
-        product_db_container \
-        order_db_container \
-        product_order_frontend \
-        prometheus \
-        grafana \
-        >/dev/null 2>&1 || true
-
-      echo "[DEPLOY] Removing dangling containers (safety net)..."
-      docker ps -aq --filter "status=exited" --filter "status=created" | xargs -r docker rm -f || true
-
-      echo "[DEPLOY] Rolling out staging environment (recreate if needed)..."
-      IMAGE_TAG=${IMAGE_TAG} \
-        compose up -d --force-recreate --remove-orphans
-
-      compose ps || true
-
-      echo "[DEPLOY] Running health checks..."
-      FAIL=0
-
-      curl -fsS http://localhost:3001/ || { echo " Frontend failed"; FAIL=1; }
-      curl -fsS http://localhost:9090/-/healthy || { echo " Prometheus failed"; FAIL=1; }
-      curl -fsS http://localhost:3000/login || { echo " Grafana failed"; FAIL=1; }
-
-      if [ "$FAIL" -ne 0 ]; then
-        echo "[DEPLOY][ERROR] One or more services unhealthy. Rolling back to :latest."
-        mkdir -p reports
-        compose logs --no-color > reports/compose-failed.log || true
-        IMAGE_TAG=latest \
-          compose up -d --force-recreate --remove-orphans || true
-        exit 1
-      fi
-
-      echo "[DEPLOY] Staging environment is healthy."
-    '''
-  }
-}
 
     stage('Release') {
         steps {

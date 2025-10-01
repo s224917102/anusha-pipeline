@@ -1,7 +1,8 @@
-FROM nginx:alpine
+FROM nginx:1.29.1-alpine-slim
 
-# Update system packages to get security fixes
-RUN apk update && apk upgrade
+# Upgrade base packages (with --no-cache, avoids caching index files)
+
+RUN apk --no-cache upgrade
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY . /usr/share/nginx/html
