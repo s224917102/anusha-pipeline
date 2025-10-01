@@ -286,9 +286,9 @@ pipeline {
           echo "[DEPLOY] Running health checks..."
           FAIL=0
 
-          wait_http "http://localhost:3001/" 60 || { echo "❌ Frontend failed"; FAIL=1; }
-          wait_http "http://localhost:9090/-/healthy" 60 || { echo "❌ Prometheus failed"; FAIL=1; }
-          wait_http "http://localhost:3000/login" 60 || { echo "❌ Grafana failed"; FAIL=1; }
+          wait_http "http://localhost:3001/" 60 || { echo " Frontend failed"; FAIL=1; }
+          wait_http "http://localhost:9090/-/healthy" 60 || { echo " Prometheus failed"; FAIL=1; }
+          wait_http "http://localhost:3000/login" 60 || { echo " Grafana failed"; FAIL=1; }
 
           if [ "$FAIL" -ne 0 ]; then
             echo "[DEPLOY][ERROR] One or more services unhealthy. Rolling back to :latest."
@@ -299,7 +299,7 @@ pipeline {
             exit 1
           fi
 
-          echo "[DEPLOY] ✅ Staging environment is healthy."
+          echo "[DEPLOY]  Staging environment is healthy."
         '''
       }
     }
@@ -388,11 +388,15 @@ pipeline {
     }
 
     stage('Monitoring & Alerting (Prometheus)') {
+      environment {
+        COUNT = '30'   // how many requests to generate
+        WIN   = '5m'   // query window for PromQL
+      }
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
 
-          echo "== Resolving Prometheus EXTERNAL-IP (MetalLB) =="
+          echo "== Resolving Prometheus EXTERNAL-IP =="
           PROM_IP=$(kubectl get svc prometheus-service -n ${NAMESPACE} \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
 
@@ -401,13 +405,11 @@ pipeline {
             exit 1
           fi
           PROM_URL="http://${PROM_IP}:80"
-
           echo "Prometheus URL: $PROM_URL"
 
-          echo "== Generating traffic to Product and Order services =="
+          echo "== Resolving Product & Order EXTERNAL-IPs =="
           PRODUCT_IP=$(kubectl get svc product-service -n ${NAMESPACE} \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-
           ORDER_IP=$(kubectl get svc order-service -n ${NAMESPACE} \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
 
@@ -416,40 +418,36 @@ pipeline {
             exit 1
           fi
 
-          PRODUCT_METRICS="http://${PRODUCT_IP}:8000/metrics"
-          ORDER_METRICS="http://${ORDER_IP}:8001/metrics"
+          PRODUCT_URL="http://${PRODUCT_IP}:8000"
+          ORDER_URL="http://${ORDER_IP}:8001"
 
-          echo "Hitting product-service (${PRODUCT_METRICS}) ${COUNT} times..."
-          for i in $(seq 1 "${COUNT}"); do curl -s "${PRODUCT_IP}:8000/health" >/dev/null || true; done
+          echo "== Generating ${COUNT} requests =="
+          for i in $(seq 1 "${COUNT}"); do
+            curl -s "${PRODUCT_URL}/health" >/dev/null || true
+            curl -s "${ORDER_URL}/health" >/dev/null || true
+          done
 
-          echo "Hitting order-service (${ORDER_METRICS}) ${COUNT} times..."
-          for i in $(seq 1 "${COUNT}"); do curl -s "${ORDER_IP}:8001/health" >/dev/null || true; done
-
-          echo "Traffic complete, waiting for Prometheus scrape..."
+          echo "Traffic complete. Waiting for Prometheus scrape..."
           sleep 10
 
-          echo "== Querying Prometheus for metrics =="
-          # Product requests
+          echo "== Querying Prometheus =="
           PROD_REQ=$(curl -fsSG "${PROM_URL}/api/v1/query" \
             --data-urlencode "query=sum(increase(http_requests_total{app_name=\\"product_service\\"}[${WIN}]))" \
             | jq -r '.data.result[0].value[1] // "0"')
 
-          # Order requests
           ORDER_REQ=$(curl -fsSG "${PROM_URL}/api/v1/query" \
             --data-urlencode "query=sum(increase(http_requests_total{app_name=\\"order_service\\"}[${WIN}]))" \
             | jq -r '.data.result[0].value[1] // "0"')
 
-          # Order creation rate
           ORDER_RATE=$(curl -fsSG "${PROM_URL}/api/v1/query" \
             --data-urlencode "query=rate(order_creation_total{app_name=\\"order_service\\"}[1m])" \
             | jq -r '.data.result[0].value[1] // "0"')
 
-          # Targets status
           TARGETS=$(curl -fsS "${PROM_URL}/api/v1/targets" \
             | jq -r '.data.activeTargets[]? | "\\(.labels.job) @ \\(.labels.instance): \\(.health)"')
 
           echo "== Monitoring Summary =="
-          echo "Prometheus : ${PROM_URL}"
+          echo "Prometheus UI: ${PROM_URL}"
           echo "Product requests in ${WIN}: ${PROD_REQ}"
           echo "Order requests in ${WIN}:   ${ORDER_REQ}"
           echo "Order creation rate (/s):   ${ORDER_RATE}"
@@ -459,8 +457,8 @@ pipeline {
       }
     }
 
-  }
 
+  }
 
   post {
     success { echo "Pipeline succeeded - ${IMAGE_TAG} (${RELEASE_TAG})" }
