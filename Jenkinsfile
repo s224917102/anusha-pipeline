@@ -250,47 +250,41 @@ pipeline {
     }
 
     /* ======================================================================== */
+/* ======================================================================== */
+/* ======================================================================== */
     stage('Deploy') {
       steps {
-        sh '''#!/usr/bin/env bash
+        sh '''#!/bin/sh
           set -euo pipefail
 
-          compose () {
-            if docker compose version >/dev/null 2>&1; then
-              docker compose "$@"
-            else
-              docker-compose "$@"
-            fi
-          }
+          # Pick correct docker compose command
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE="docker compose"
+          else
+            COMPOSE="docker-compose"
+          fi
 
           echo "[DEPLOY] Cleaning up old environment..."
+          $COMPOSE down -v --remove-orphans || true
 
-          # 1. Bring down existing stack
-          compose down -v --remove-orphans || true
-
-          # 2. Find all host ports in docker-compose.yml
-          get_ports() {
-            grep -E "^[[:space:]]*- \"?[0-9]+:[0-9]+" docker-compose.yml \
-              | sed -E 's/.*- "?([0-9]+):[0-9]+.*/\\1/'
-          }
-
-          # 3. Free each port dynamically
-          for port in $(get_ports); do
+          # Free host ports dynamically based on docker-compose.yml
+          for port in $(grep -E "^[[:space:]]*- \"?[0-9]+:[0-9]+" docker-compose.yml \
+            | sed -E 's/.*- "?\\([0-9]+\\):[0-9]+.*/\\1/'); do
             if lsof -i :$port >/dev/null 2>&1; then
               echo "Freeing port $port..."
               fuser -k ${port}/tcp || true
             fi
           done
 
-          # 4. Remove exited/created containers (safety net)
+          # Remove exited/created containers (safety net)
           docker ps -aq --filter "status=exited" --filter "status=created" \
             | xargs -r docker rm -f || true
 
           echo "[DEPLOY] Rolling out staging environment..."
           IMAGE_TAG=${IMAGE_TAG} \
-            compose up -d --force-recreate --remove-orphans --renew-anon-volumes
+            $COMPOSE up -d --force-recreate --remove-orphans --renew-anon-volumes
 
-          compose ps || true
+          $COMPOSE ps || true
 
           echo "[DEPLOY] Running health checks..."
           FAIL=0
@@ -302,9 +296,9 @@ pipeline {
           if [ "$FAIL" -ne 0 ]; then
             echo "[DEPLOY][ERROR] One or more services unhealthy. Rolling back to :latest."
             mkdir -p reports
-            compose logs --no-color > reports/compose-failed.log || true
+            $COMPOSE logs --no-color > reports/compose-failed.log || true
             IMAGE_TAG=latest \
-              compose up -d --force-recreate --remove-orphans || true
+              $COMPOSE up -d --force-recreate --remove-orphans || true
             exit 1
           fi
 
