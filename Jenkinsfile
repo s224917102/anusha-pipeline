@@ -254,57 +254,55 @@ pipeline {
     }
 
     /* ======================================================================== */
+    stage('Deploy') {
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
 
-  stage('Deploy') {
-    steps {
-      sh '''#!/usr/bin/env bash
-        set -euo pipefail
+          compose () {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
+            else
+              docker-compose "$@"
+            fi
+          }
 
-        compose () {
-          if docker compose version >/dev/null 2>&1; then
-            docker compose "$@"
-          else
-            docker-compose "$@"
+          wait_http () {
+            url="$1"; tries="${2:-60}"
+            i=0
+            until curl -fsS "$url" >/dev/null 2>&1; do
+              i=$((i+1))
+              [ $i -ge $tries ] && return 1
+              sleep 2
+            done
+          }
+
+          echo "[DEPLOY] Rolling out staging environment (recreate if needed)..."
+          IMAGE_TAG=${IMAGE_TAG} \
+            compose up -d --force-recreate --remove-orphans
+
+          compose ps || true
+
+          echo "[DEPLOY] Running health checks..."
+          FAIL=0
+
+          wait_http "http://localhost:3001/" 60 || { echo "❌ Frontend failed"; FAIL=1; }
+          wait_http "http://localhost:9090/-/healthy" 60 || { echo "❌ Prometheus failed"; FAIL=1; }
+          wait_http "http://localhost:3000/login" 60 || { echo "❌ Grafana failed"; FAIL=1; }
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "[DEPLOY][ERROR] One or more services unhealthy. Rolling back to :latest."
+            mkdir -p reports
+            compose logs --no-color > reports/compose-failed.log || true
+            IMAGE_TAG=latest \
+              compose up -d --force-recreate --remove-orphans || true
+            exit 1
           fi
-        }
 
-        wait_http () {
-          url="$1"; tries="${2:-60}"
-          i=0
-          until curl -fsS "$url" >/dev/null 2>&1; do
-            i=$((i+1))
-            [ $i -ge $tries ] && return 1
-            sleep 2
-          done
-        }
-
-        echo "[DEPLOY] Rolling out staging environment (recreate if needed)..."
-        COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=${IMAGE_TAG} \
-          compose up -d --force-recreate --remove-orphans
-
-        compose ps || true
-
-        echo "[DEPLOY] Running health checks..."
-        FAIL=0
-
-        wait_http "http://localhost:3001/" 60 || { echo "❌ Frontend failed"; FAIL=1; }
-        wait_http "http://localhost:9090/-/healthy" 60 || { echo "❌ Prometheus failed"; FAIL=1; }
-        wait_http "http://localhost:3000/login" 60 || { echo "❌ Grafana failed"; FAIL=1; }
-
-        if [ "$FAIL" -ne 0 ]; then
-          echo "[DEPLOY][ERROR] One or more services unhealthy. Rolling back to :latest."
-          mkdir -p reports
-          compose logs --no-color > reports/compose-failed.log || true
-          COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest \
-            compose up -d --force-recreate --remove-orphans || true
-          exit 1
-        fi
-
-        echo "[DEPLOY] ✅ Staging environment is healthy."
-      '''
+          echo "[DEPLOY] ✅ Staging environment is healthy."
+        '''
+      }
     }
-  }
-
 
 
     stage('Release') {
