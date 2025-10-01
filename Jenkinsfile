@@ -85,7 +85,6 @@ pipeline {
       }
     }
 
-    /* ======================================================================== */
 
     /* ========================= TEST ========================= */
     stage('Test') {
@@ -194,9 +193,7 @@ pipeline {
       }
     }
 
-    /* ========================= SECURITY (local images) ======================= */
-    /* ========================= SECURITY (local images) ======================= */
-    /* ========================= SECURITY (local images) ======================= */
+    /* ========================= SECURITY ======================= */
     stage('Security') {
       steps {
         withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
