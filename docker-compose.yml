@@ -81,9 +81,9 @@ services:
       - "8000:8000"
     environment:
       POSTGRES_HOST: product_db
-      AZURE_STORAGE_ACCOUNT_NAME: <your_storage_account_name>
+      AZURE_STORAGE_ACCOUNT_NAME: anushakatuwalstg
       AZURE_STORAGE_ACCOUNT_KEY: <your_storage_account_key>
-      AZURE_STORAGE_CONTAINER_NAME: <your_container_name>
+      AZURE_STORAGE_CONTAINER_NAME: product-images
       AZURE_SAS_TOKEN_EXPIRY_HOURS: 24
     depends_on:
       product_db:

@@ -10,23 +10,25 @@ pipeline {
   environment {
     PATH = "/opt/homebrew/opt/python@3.11/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-    DOCKERHUB_NS    = 's224917102'
+
     DOCKERHUB_CREDS = 'dockerhub-s224917102'
-    REGISTRY        = 'docker.io'
-
-
-    PRODUCT_IMG     = "${REGISTRY}/${DOCKERHUB_NS}/product_service"
-    ORDER_IMG       = "${REGISTRY}/${DOCKERHUB_NS}/order_service"
-    FRONTEND_IMG    = "${REGISTRY}/${DOCKERHUB_NS}/frontend"
 
     // Local tags built in Build stage
     LOCAL_IMG_PRODUCT  = 'week09_example02_product_service:latest'
     LOCAL_IMG_ORDER    = 'week09_example02_order_service:latest'
     LOCAL_IMG_FRONTEND = 'week09_example02_frontend:latest'
 
-    KUBE_CONTEXT  = 'docker-desktop'
-    NAMESPACE     = 'default'
-    K8S_DIR       = 'k8s'
+    // Azure rresources
+    AZURE_CREDENTIALS = 'AZURE_CREDENTIALS'
+    ACR_NAME="anushakatuwalacr"   # change to your ACR name
+    ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+    NAMESPACE="default"
+    RG_PRODUCTION="anushakatuwal-rg"
+    AKS_PRODUCTION="anushakatuwal-aks"
+
+    PRODUCT_IMG     = "${ACR_LOGIN_SERVER}/product_service"
+    ORDER_IMG       = "${ACR_LOGIN_SERVER}/order_service"
+    FRONTEND_IMG    = "${ACR_LOGIN_SERVER}/frontend"
 
     SONARQUBE = 'SonarQube'
     SONAR_PROJECT_KEY  = 's224917102_DevOpsPipeline'
@@ -36,6 +38,7 @@ pipeline {
     PRODUCT_DIR  = 'backend/product_service'
     ORDER_DIR    = 'backend/order_service'
     FRONTEND_DIR = 'frontend'
+    K8S_DIR       = 'k8s'
 
     TRIVY_VER    = '0.55.0'
   }
@@ -306,39 +309,44 @@ pipeline {
 
     stage('Release') {
         steps {
-            withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+          withCredentials([usernamePassword(credentialsId: "${AZURE_CREDENTIALS}", usernameVariable: 'AZURE_USER', passwordVariable: 'AZURE_PWD')]) {
             sh '''#!/usr/bin/env bash
                 set -euo pipefail
 
-                echo "[RELEASE] Login & push images"
-                echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+                # ---------- Azure Setup ----------
+
+                echo "[RELEASE] Login & push images to ACR"
+                az acr login --name ${ACR_LOGIN_SERVER}
 
                 for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-                docker push $img:${IMAGE_TAG}
-                docker push $img:latest
-                docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
-                docker push $img:${RELEASE_TAG}
+                  docker push $img:latest
+                  docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
+                  docker push $img:${RELEASE_TAG}
                 done
 
-                echo "[RELEASE] Deploy to local Kubernetes (${KUBE_CONTEXT})"
-                kubectl config use-context ${KUBE_CONTEXT}
-                kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                # ---------- Deploy to AKS ----------
+                echo "Updating Kubernetes manifests"
 
-                echo "[RELEASE] Apply MetalLB config if present"
-                
-                if [ -f "${K8S_DIR}/metallb-config.yaml" ]; then
-                  kubectl apply -f "${K8S_DIR}/metallb-config.yaml"
-                else
-                  echo "[RELEASE][WARN] No metallb-config.yaml found in ${K8S_DIR}, skipping"
-                fi
+                echo "[RELEASE] Deploy to AKS"
+                az account set --subscription 0495cce-c2ce-414b-8f9b-4a8a5e500256
+                az aks get-credentials --resource-group ${RG_PRODUCTION} --name ${AKS_PRODUCTION} --overwrite-existing
+          
+                echo " Setting up namespace..."
+                kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
                 echo "[RELEASE] Apply infra (configmaps, secrets, databases)"
                 for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
                 [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
                 done
 
-                echo "[RELEASE] Apply microservices (product, order, frontend)"
-                for f in product-service.yaml order-service.yaml frontend.yaml; do
+                echo "[RELEASE] Apply backend microservices (product, order)"
+                for f in product-service.yaml order-service.yaml; do
+                [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                done
+
+
+                echo "[RELEASE] Apply frontend microservices"
+                for f in frontend-configmaps.yaml frontend.yaml; do
                 [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
                 done
 
@@ -381,14 +389,16 @@ pipeline {
 
                 echo "[RELEASE] Kubernetes release complete."
                 kubectl get svc -n ${NAMESPACE}
+
+                az logout
             '''
-            }
+          }
         }
     }
 
     stage('Monitoring & Alerting (Prometheus)') {
       environment {
-        COUNT = '30'   // how many requests to generate
+        COUNT = '10'   // how many requests to generate
         WIN   = '5m'   // query window for PromQL
       }
       steps {
@@ -400,10 +410,10 @@ pipeline {
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
 
           if [ -z "$PROM_IP" ]; then
-            echo "[ERROR] Prometheus service has no EXTERNAL-IP yet. Check MetalLB."
+            echo "[ERROR] Prometheus service has no EXTERNAL-IP yet."
             exit 1
           fi
-          PROM_URL="http://${PROM_IP}:80"
+          PROM_URL="http://${PROM_IP}:9090"
           echo "Prometheus URL: $PROM_URL"
 
           echo "== Resolving Product & Order EXTERNAL-IPs =="

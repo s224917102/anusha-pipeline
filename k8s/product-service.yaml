@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
       - name: product-service-container
-        image: docker.io/s224917102/product_service:latest
+        image: anushakatuwalacr.azurecr.io/product_service:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -44,6 +44,26 @@ spec:
             secretKeyRef:
               name: ecomm-secrets-w09-aks
               key: POSTGRES_PASSWORD
+        - name: AZURE_STORAGE_ACCOUNT_NAME
+          valueFrom:
+            secretKeyRef:
+              name: ecomm-secrets-w09-aks # Secret name matches
+              key: AZURE_STORAGE_ACCOUNT_NAME
+        - name: AZURE_STORAGE_ACCOUNT_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ecomm-secrets-w09-aks # Secret name matches
+              key: AZURE_STORAGE_ACCOUNT_KEY
+        - name: AZURE_STORAGE_CONTAINER_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: ecomm-config-w09-aks # ConfigMap name matches
+              key: AZURE_STORAGE_CONTAINER_NAME
+        - name: AZURE_SAS_TOKEN_EXPIRY_HOURS
+          valueFrom:
+            configMapKeyRef:
+              name: ecomm-config-w09-aks # ConfigMap name matches
+              key: AZURE_SAS_TOKEN_EXPIRY_HOURS
 ---
 apiVersion: v1
 kind: Service
