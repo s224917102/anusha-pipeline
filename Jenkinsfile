@@ -393,15 +393,9 @@ stage('Deploy') {
     }
 
     stage('Monitoring & Alerting (Prometheus)') {
-      environment {
-        KUBECONFIG = '/var/jenkins_home/.kube/config'
-        COUNT      = '30'   // number of requests to generate
-        WIN        = '5m'   // Prometheus query window
-      }
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          export KUBECONFIG="${KUBECONFIG}"
 
           echo "== Resolving Prometheus EXTERNAL-IP (MetalLB) =="
           PROM_IP=$(kubectl get svc prometheus-service -n ${NAMESPACE} \
@@ -411,13 +405,14 @@ stage('Deploy') {
             echo "[ERROR] Prometheus service has no EXTERNAL-IP yet. Check MetalLB."
             exit 1
           fi
-          PROM_URL="http://${PROM_IP}"
+          PROM_URL="http://${PROM_IP}:80"
 
           echo "Prometheus URL: $PROM_URL"
 
           echo "== Generating traffic to Product and Order services =="
           PRODUCT_IP=$(kubectl get svc product-service -n ${NAMESPACE} \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+            
           ORDER_IP=$(kubectl get svc order-service -n ${NAMESPACE} \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
 
