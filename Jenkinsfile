@@ -258,7 +258,7 @@ pipeline {
 
     /* ======================================================================== */
 
-stage('Deploy') {
+    stage('Deploy') {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
@@ -277,38 +277,39 @@ stage('Deploy') {
             until curl -fsS "$url" >/dev/null 2>&1; do
               i=$((i+1))
               [ $i -ge $tries ] && return 1
-              sleep 1
+              sleep 2
             done
           }
 
-          echo "[DEPLOY] Staging with docker-compose (no rebuilds)"
-          if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
-            compose up -d --remove-orphans
-            compose ps || true
+          echo "[DEPLOY] Cleaning up old containers..."
+          compose down -v || true
 
-            # Frontend
-            wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
-            # Prometheus
-            wait_http "http://localhost:9090/" 90 || FAIL_PROM=1
-            # Grafana
-            wait_http "http://localhost:3000/" 90 || FAIL_GRAF=1
+          echo "[DEPLOY] Rolling out new staging environment"
+          COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=${IMAGE_TAG} \
+            compose up -d --force-recreate --remove-orphans
 
-            if [ "${FAIL_PRODUCT:-0}" -ne 0 ] || [ "${FAIL_ORDER:-0}" -ne 0 ] || \
-               [ "${FAIL_FRONTEND:-0}" -ne 0 ] || [ "${FAIL_PROM:-0}" -ne 0 ] || \
-               [ "${FAIL_GRAF:-0}" -ne 0 ]; then
-              echo "[DEPLOY][ERROR] Staging health checks failed. Attempting rollback to :latest."
-              compose logs --no-color > reports/compose-failed.log || true
-              COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d || true
-              exit 1
-            fi
+          compose ps || true
 
-            echo "[DEPLOY] Staging environment is healthy."
-          else
-            echo "[DEPLOY][WARN] No docker-compose file present. Skipping staging deploy."
+          echo "[DEPLOY] Running health checks..."
+
+          FAIL=0
+
+          wait_http "http://localhost:3001/" 90 || { echo "Frontend failed"; FAIL=1; }
+          wait_http "http://localhost:9090/-/healthy" 90 || { echo "Prometheus failed"; FAIL=1; }
+          wait_http "http://localhost:3000/login" 90 || { echo "Grafana failed"; FAIL=1; }
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "[DEPLOY][ERROR] One or more services unhealthy. Rolling back to :latest."
+            compose logs --no-color > reports/compose-failed.log || true
+            COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d --force-recreate --remove-orphans || true
+            exit 1
           fi
+
+          echo "[DEPLOY] Staging environment is healthy."
         '''
       }
     }
+
 
     stage('Release') {
         steps {
@@ -412,7 +413,7 @@ stage('Deploy') {
           echo "== Generating traffic to Product and Order services =="
           PRODUCT_IP=$(kubectl get svc product-service -n ${NAMESPACE} \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-            
+
           ORDER_IP=$(kubectl get svc order-service -n ${NAMESPACE} \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
 
