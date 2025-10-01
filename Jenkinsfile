@@ -252,7 +252,7 @@ pipeline {
         archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
       }
     }
-    
+
     /* ======================================================================== */
     stage('Deploy') {
       steps {
@@ -267,11 +267,30 @@ pipeline {
             fi
           }
 
-          echo "[DEPLOY] Cleaning up old containers..."
-          # Remove stopped containers system-wide (safe for fixed names)
-          docker container prune -f || true
+          echo "[DEPLOY] Cleaning up old environment..."
 
-          echo "[DEPLOY] Rolling out staging environment (recreate if needed)..."
+          # 1. Bring down existing stack
+          compose down -v --remove-orphans || true
+
+          # 2. Find all host ports in docker-compose.yml
+          get_ports() {
+            grep -E "^[[:space:]]*- \"?[0-9]+:[0-9]+" docker-compose.yml \
+              | sed -E 's/.*- "?([0-9]+):[0-9]+.*/\\1/'
+          }
+
+          # 3. Free each port dynamically
+          for port in $(get_ports); do
+            if lsof -i :$port >/dev/null 2>&1; then
+              echo "Freeing port $port..."
+              fuser -k ${port}/tcp || true
+            fi
+          done
+
+          # 4. Remove exited/created containers (safety net)
+          docker ps -aq --filter "status=exited" --filter "status=created" \
+            | xargs -r docker rm -f || true
+
+          echo "[DEPLOY] Rolling out staging environment..."
           IMAGE_TAG=${IMAGE_TAG} \
             compose up -d --force-recreate --remove-orphans --renew-anon-volumes
 
@@ -297,7 +316,6 @@ pipeline {
         '''
       }
     }
-
 
     stage('Release') {
         steps {
