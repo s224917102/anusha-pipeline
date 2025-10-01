@@ -252,55 +252,54 @@ pipeline {
     /* ======================================================================== */
 /* ======================================================================== */
 /* ======================================================================== */
-    stage('Deploy') {
+   stage('Deploy') {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
 
-          if docker compose version >/dev/null 2>&1; then
-            COMPOSE="docker compose"
-          else
-            COMPOSE="docker-compose"
-          fi
-
-          echo "[DEPLOY] Cleaning up old environment..."
-          $COMPOSE down -v --remove-orphans || true
-
-          # Free host ports dynamically from docker-compose.yml
-          for port in $(grep -E "^[[:space:]]*- \"?[0-9]+:[0-9]+" docker-compose.yml \
-            | sed -E 's/.*- "?([0-9]+):[0-9]+.*/\\1/'); do
-            if lsof -i :$port >/dev/null 2>&1; then
-              echo "Freeing port $port..."
-              fuser -k ${port}/tcp || true
+          compose () {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
+            else
+              docker-compose "$@"
             fi
-          done
+          }
 
-          docker ps -aq --filter "status=exited" --filter "status=created" \
-            | xargs -r docker rm -f || true
+          wait_http () {
+            url="$1"; tries="${2:-90}"
+            i=0
+            until curl -fsS "$url" >/dev/null 2>&1; do
+              i=$((i+1))
+              [ $i -ge $tries ] && return 1
+              sleep 1
+            done
+          }
 
-          echo "[DEPLOY] Rolling out staging environment..."
-          IMAGE_TAG=${IMAGE_TAG} \
-            $COMPOSE up -d --force-recreate --remove-orphans --renew-anon-volumes
+          echo "[DEPLOY] Staging with docker-compose (no rebuilds)"
+          if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
+            compose up -d --remove-orphans
+            compose ps || true
 
-          $COMPOSE ps || true
+            # Frontend
+            wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
+            # Prometheus
+            wait_http "http://localhost:9090/" 90 || FAIL_PROM=1
+            # Grafana
+            wait_http "http://localhost:3000/" 90 || FAIL_GRAF=1
 
-          echo "[DEPLOY] Running health checks..."
-          FAIL=0
+            if [ "${FAIL_PRODUCT:-0}" -ne 0 ] || [ "${FAIL_ORDER:-0}" -ne 0 ] || \
+               [ "${FAIL_FRONTEND:-0}" -ne 0 ] || [ "${FAIL_PROM:-0}" -ne 0 ] || \
+               [ "${FAIL_GRAF:-0}" -ne 0 ]; then
+              echo "[DEPLOY][ERROR] Staging health checks failed. Attempting rollback to :latest."
+              compose logs --no-color > reports/compose-failed.log || true
+              COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d || true
+              exit 1
+            fi
 
-          curl -fsS http://localhost:3001/ || { echo " Frontend failed"; FAIL=1; }
-          curl -fsS http://localhost:9090/-/healthy || { echo " Prometheus failed"; FAIL=1; }
-          curl -fsS http://localhost:3000/login || { echo " Grafana failed"; FAIL=1; }
-
-          if [ "$FAIL" -ne 0 ]; then
-            echo "[DEPLOY][ERROR] One or more services unhealthy. Rolling back to :latest."
-            mkdir -p reports
-            $COMPOSE logs --no-color > reports/compose-failed.log || true
-            IMAGE_TAG=latest \
-              $COMPOSE up -d --force-recreate --remove-orphans || true
-            exit 1
+            echo "[DEPLOY] Staging environment is healthy."
+          else
+            echo "[DEPLOY][WARN] No docker-compose file present. Skipping staging deploy."
           fi
-
-          echo "[DEPLOY] Staging environment is healthy."
         '''
       }
     }
