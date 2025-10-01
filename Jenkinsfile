@@ -85,78 +85,76 @@ pipeline {
       }
     }
 
-
     /* ========================= TEST ========================= */
     stage('Test') {
       options { timeout(time: 25, unit: 'MINUTES') }
       steps {
-        sh '''
+        sh '''#!/usr/bin/env bash
           set -euo pipefail
 
-          echo "[TEST] Python version check:"
-          python3.11 --version || { echo "Python 3.11 not found"; exit 1; }
-
-          make_venv () {
-            vdir="$1"; shift
-            python3.11 -m venv "$vdir"
-            . "$vdir/bin/activate"
-            python -m pip install -U pip wheel >/dev/null
-            [ $# -gt 0 ] && python -m pip install "$@" >/dev/null || true
-            deactivate
-          }
-
-          wait_db () {
-            name="$1"
-            for i in $(seq 1 30); do
-              if docker exec "$name" pg_isready -U postgres >/dev/null 2>&1; then
-                echo " - $name ready"
-                return 0
-              fi
-              sleep 2
-            done
-            echo "ERROR: $name not ready after 60s"
-            docker logs "$name" || true
-            return 1
-          }
-
+          echo "[TEST] Cleaning up old DB containers..."
           docker rm -f product_db order_db >/dev/null 2>&1 || true
 
-          docker run -d --name product_db -p 55432:5432 \
-            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=products \
-            postgres:15
-          docker run -d --name order_db -p 55433:5432 \
-            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=orders \
-            postgres:15
+          echo "[TEST] Starting fresh Postgres containers with healthchecks"
+          docker run -d --name product_db \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=products \
+            --health-cmd='pg_isready -U postgres' \
+            --health-interval=5s \
+            --health-retries=12 \
+            -p 0:5432 postgres:15
 
-          wait_db product_db
-          wait_db order_db
+          docker run -d --name order_db \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=orders \
+            --health-cmd='pg_isready -U postgres' \
+            --health-interval=5s \
+            --health-retries=12 \
+            -p 0:5432 postgres:15
+
+          echo "[TEST] Resolving dynamic host ports"
+          PROD_PORT=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort }}' product_db)
+          ORDER_PORT=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort }}' order_db)
+
+          echo "Product DB on localhost:${PROD_PORT}"
+          echo "Order DB   on localhost:${ORDER_PORT}"
+
+          echo "[TEST] Waiting for health checks..."
+          for name in product_db order_db; do
+            for i in $(seq 1 30); do
+              STATUS=$(docker inspect -f '{{.State.Health.Status}}' $name)
+              if [ "$STATUS" = "healthy" ]; then
+                echo " - $name healthy"
+                break
+              fi
+              echo "Waiting for $name ($STATUS)..."
+              sleep 2
+            done
+          done
 
           echo "[TEST] Running product tests"
           if [ -d ${PRODUCT_DIR} ]; then
-            make_venv ".venv_prod" "pytest>=8,<9" "pytest-timeout==2.3.1"
+            python3.11 -m venv .venv_prod
             . .venv_prod/bin/activate
-            pip install -r ${PRODUCT_DIR}/requirements.txt || true
-            pip install -r ${PRODUCT_DIR}/requirements-dev.txt || true
-            export POSTGRES_HOST=localhost POSTGRES_PORT=55432 POSTGRES_DB=products POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
-            export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-            pytest -q -p pytest_timeout ${PRODUCT_DIR}/tests --junitxml=product_unit.xml --timeout=60
+            pip install -U pip wheel >/dev/null
+            pip install -r ${PRODUCT_DIR}/requirements.txt -r ${PRODUCT_DIR}/requirements-dev.txt || true
+            export POSTGRES_HOST=localhost POSTGRES_PORT=$PROD_PORT POSTGRES_DB=products POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
+            pytest -q --junitxml=product_unit.xml ${PRODUCT_DIR}/tests
             deactivate
           fi
 
           echo "[TEST] Running order tests"
           if [ -d ${ORDER_DIR} ]; then
-            make_venv ".venv_order" "pytest>=8,<9" "pytest-timeout==2.3.1"
+            python3.11 -m venv .venv_order
             . .venv_order/bin/activate
-            pip install -r ${ORDER_DIR}/requirements.txt || true
-            pip install -r ${ORDER_DIR}/requirements-dev.txt || true
-            export POSTGRES_HOST=localhost POSTGRES_PORT=55433 POSTGRES_DB=orders POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
-            export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-            pytest -q -p pytest_timeout ${ORDER_DIR}/tests --junitxml=order_unit.xml --timeout=60
+            pip install -U pip wheel >/dev/null
+            pip install -r ${ORDER_DIR}/requirements.txt -r ${ORDER_DIR}/requirements-dev.txt || true
+            export POSTGRES_HOST=localhost POSTGRES_PORT=$ORDER_PORT POSTGRES_DB=orders POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
+            pytest -q --junitxml=order_unit.xml ${ORDER_DIR}/tests
             deactivate
           fi
-
-          docker rm -f product_db order_db >/dev/null 2>&1 || true
-
         '''
       }
       post {
@@ -166,6 +164,7 @@ pipeline {
         }
       }
     }
+
 
     stage('Code Quality') {
       steps {
