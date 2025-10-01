@@ -20,7 +20,7 @@ pipeline {
 
     // Azure rresources
     AZURE_CREDENTIALS = 'AZURE_CREDENTIALS'
-    ACR_NAME="anushakatuwalacr"   # change to your ACR name
+    ACR_NAME="anushakatuwalacr"
     ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
     NAMESPACE="default"
     RG_PRODUCTION="anushakatuwal-rg"
