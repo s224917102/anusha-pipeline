@@ -254,7 +254,7 @@ pipeline {
 /* ======================================================================== */
     stage('Deploy') {
       steps {
-        sh '''#!/bin/sh
+        sh """#!/bin/sh
           set -euo pipefail
 
           if docker compose version >/dev/null 2>&1; then
@@ -301,7 +301,7 @@ pipeline {
           fi
 
           echo "[DEPLOY] Staging environment is healthy."
-        '''
+        """
       }
     }
 
