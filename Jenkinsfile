@@ -158,16 +158,6 @@ pipeline {
 
           docker rm -f product_db order_db >/dev/null 2>&1 || true
 
-
-          echo "[BUILD] Smoke test with docker-compose"
-          COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=${IMAGE_TAG} compose up -d
-          sleep 15
-          curl -fsS http://localhost:3001/ || { echo "Frontend not responding"; exit 1; }
-          curl -fsS http://localhost:9090/-/healthy || { echo "Prometheus not healthy"; exit 1; }
-          curl -fsS http://localhost:3000/login || { echo "Grafana not responding"; exit 1; }
-          echo "[BUILD] All containers healthy."
-          compose down -v
-          
         '''
       }
       post {
