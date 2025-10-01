@@ -267,6 +267,17 @@ pipeline {
             fi
           }
 
+          echo "[DEPLOY] Cleaning up old containers..."
+          compose down -v --remove-orphans || true
+          docker rm -f product_db_container order_db_container >/dev/null 2>&1 || true
+
+          echo "[DEPLOY] Rolling out staging environment (fresh recreate)..."
+          IMAGE_TAG=${IMAGE_TAG} \
+            compose up -d --force-recreate --remove-orphans
+
+          compose ps || true
+
+          echo "[DEPLOY] Running health checks..."
           wait_http () {
             url="$1"; tries="${2:-60}"
             i=0
@@ -277,15 +288,7 @@ pipeline {
             done
           }
 
-          echo "[DEPLOY] Rolling out staging environment (recreate if needed)..."
-          IMAGE_TAG=${IMAGE_TAG} \
-            compose up -d --force-recreate --remove-orphans
-
-          compose ps || true
-
-          echo "[DEPLOY] Running health checks..."
           FAIL=0
-
           wait_http "http://localhost:3001/" 60 || { echo " Frontend failed"; FAIL=1; }
           wait_http "http://localhost:9090/-/healthy" 60 || { echo " Prometheus failed"; FAIL=1; }
           wait_http "http://localhost:3000/login" 60 || { echo " Grafana failed"; FAIL=1; }
@@ -294,15 +297,14 @@ pipeline {
             echo "[DEPLOY][ERROR] One or more services unhealthy. Rolling back to :latest."
             mkdir -p reports
             compose logs --no-color > reports/compose-failed.log || true
-            IMAGE_TAG=latest \
-              compose up -d --force-recreate --remove-orphans || true
+            IMAGE_TAG=latest compose up -d --force-recreate --remove-orphans || true
             exit 1
           fi
 
-          echo "[DEPLOY]  Staging environment is healthy."
+          echo "[DEPLOY] Staging environment is healthy."
         '''
       }
-    }
+}
 
 
     stage('Release') {
