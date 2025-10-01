@@ -257,7 +257,6 @@ pipeline {
         sh '''#!/bin/sh
           set -euo pipefail
 
-          # Pick correct docker compose command
           if docker compose version >/dev/null 2>&1; then
             COMPOSE="docker compose"
           else
@@ -267,16 +266,15 @@ pipeline {
           echo "[DEPLOY] Cleaning up old environment..."
           $COMPOSE down -v --remove-orphans || true
 
-          # Free host ports dynamically based on docker-compose.yml
+          # Free host ports dynamically from docker-compose.yml
           for port in $(grep -E "^[[:space:]]*- \"?[0-9]+:[0-9]+" docker-compose.yml \
-            | sed -E 's/.*- "?\\([0-9]+\\):[0-9]+.*/\\1/'); do
+            | sed -E 's/.*- "?([0-9]+):[0-9]+.*/\\1/'); do
             if lsof -i :$port >/dev/null 2>&1; then
               echo "Freeing port $port..."
               fuser -k ${port}/tcp || true
             fi
           done
 
-          # Remove exited/created containers (safety net)
           docker ps -aq --filter "status=exited" --filter "status=created" \
             | xargs -r docker rm -f || true
 
