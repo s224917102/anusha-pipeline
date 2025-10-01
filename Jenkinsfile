@@ -43,6 +43,7 @@ pipeline {
   stages {
 
     /* ========================= BUILD (rebuild images) ========================= */
+    /* ========================= BUILD (rebuild images) ========================= */
     stage('Build') {
       steps {
         checkout scm
@@ -56,6 +57,11 @@ pipeline {
 
           export DOCKER_BUILDKIT=1
           PLATFORM="linux/amd64"
+
+          echo "[BUILD] Cleaning up old containers..."
+          compose () { docker compose "$@" || docker-compose "$@"; }
+          compose down -v --remove-orphans || true
+          docker rm -f product_db_container order_db_container >/dev/null 2>&1 || true
 
           echo "[BUILD] Using buildx for ${PLATFORM}"
           docker buildx create --use --name multiarch || docker buildx use multiarch
@@ -75,16 +81,6 @@ pipeline {
 
           docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:${IMAGE_TAG}
           docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:latest
-
-          echo "[BUILD] Smoke test with docker-compose"
-          compose () { docker compose "$@" || docker-compose "$@"; }
-          COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=${IMAGE_TAG} compose up -d
-          sleep 15
-          curl -fsS http://localhost:3001/ || { echo "Frontend not responding"; exit 1; }
-          curl -fsS http://localhost:9090/-/healthy || { echo "Prometheus not healthy"; exit 1; }
-          curl -fsS http://localhost:3000/login || { echo "Grafana not responding"; exit 1; }
-          echo "[BUILD] All containers healthy."
-          compose down -v
         '''
       }
     }
@@ -161,6 +157,17 @@ pipeline {
           fi
 
           docker rm -f product_db order_db >/dev/null 2>&1 || true
+
+
+          echo "[BUILD] Smoke test with docker-compose"
+          COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=${IMAGE_TAG} compose up -d
+          sleep 15
+          curl -fsS http://localhost:3001/ || { echo "Frontend not responding"; exit 1; }
+          curl -fsS http://localhost:9090/-/healthy || { echo "Prometheus not healthy"; exit 1; }
+          curl -fsS http://localhost:3000/login || { echo "Grafana not responding"; exit 1; }
+          echo "[BUILD] All containers healthy."
+          compose down -v
+          
         '''
       }
       post {
