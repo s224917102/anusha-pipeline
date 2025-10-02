@@ -348,7 +348,7 @@ pipeline {
                 done
 
                 # --- Apply Apps ---
-                for f in product-service.yaml order-service.yaml frontend-configmaps.yaml frontend.yaml; do
+                for f in product-service.yaml order-service.yaml frontend.yaml; do
                   [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
                 done
 
@@ -479,8 +479,6 @@ pipeline {
         '''
       }
     }
-
-
   }
 
   post {
