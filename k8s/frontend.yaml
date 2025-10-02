@@ -24,9 +24,15 @@ spec:
           - containerPort: 80
         env:
         - name: PRODUCT_API_URL
-          value: "http://product-service:8000"
+          valueFrom:
+            configMapKeyRef:
+              name: frontend-config
+              key: PRODUCT_API_URL
         - name: ORDER_API_URL
-          value: "http://order-service:8001"
+          valueFrom:
+            configMapKeyRef:
+              name: frontend-config
+              key: ORDER_API_URL
 ---
 apiVersion: v1
 kind: Service

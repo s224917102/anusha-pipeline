@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+data:
+  PRODUCT_API_URL: "http://product-service:8000"
+  ORDER_API_URL:   "http://order-service:8001"
