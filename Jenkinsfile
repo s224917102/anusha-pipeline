@@ -169,7 +169,6 @@ pipeline {
       }
     }
 
-
     stage('Code Quality') {
       steps {
         withSonarQubeEnv("${SONARQUBE}") {
@@ -310,14 +309,25 @@ pipeline {
 
     stage('Release') {
         steps {
-          withCredentials([usernamePassword(credentialsId: "${AZURE_CREDENTIALS}", usernameVariable: 'AZURE_USER', passwordVariable: 'AZURE_PWD')]) {
+          withCredentials([string(credentialsId: 'AZURE_CREDENTIALS', variable: 'AZURE_CRED_JSON')]) {
             sh '''#!/usr/bin/env bash
                 set -euo pipefail
+                echo "$AZURE_CRED_JSON" > azure.json
 
+                CLIENT_ID=$(jq -r .clientId azure.json)
+                CLIENT_SECRET=$(jq -r .clientSecret azure.json)
+                TENANT_ID=$(jq -r .tenantId azure.json)
+                SUBSCRIPTION_ID=$(jq -r .subscriptionId azure.json)
+
+                echo "[RELEASE] Logging into Azure with Service Principal"
+                az login --service-principal \
+                  --username "$CLIENT_ID" \
+                  --password "$CLIENT_SECRET" \
+                  --tenant "$TENANT_ID"
                 # ---------- Azure Setup ----------
 
-                echo "[RELEASE] Login & push images to ACR"
-                az acr login --name ${ACR_LOGIN_SERVER}
+                echo "[RELEASE] Login successful. Now pushing images to ACR..."
+                az acr login --name ${ACR_NAME}
 
                 for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
                   docker push $img:latest
