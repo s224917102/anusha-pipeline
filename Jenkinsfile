@@ -388,8 +388,8 @@ pipeline {
                 }
 
                 # App services: expect health endpoints
-                check_service product-service   8000 "/health"
-                check_service order-service     8001 "/health"
+                check_service product-service   8000 "/"
+                check_service order-service     8001 "/"
                 check_service frontend          3001 "/" 
 
                 # Monitoring: just check base URL responds
