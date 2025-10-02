@@ -22,17 +22,6 @@ spec:
         imagePullPolicy: Always
         ports:
           - containerPort: 80
-        env:
-        - name: PRODUCT_API_URL
-          valueFrom:
-            configMapKeyRef:
-              name: frontend-config
-              key: PRODUCT_API_URL
-        - name: ORDER_API_URL
-          valueFrom:
-            configMapKeyRef:
-              name: frontend-config
-              key: ORDER_API_URL
 ---
 apiVersion: v1
 kind: Service

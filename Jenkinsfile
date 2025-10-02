@@ -394,11 +394,36 @@ pipeline {
                 # App services: expect health endpoints
                 check_service product-service   8000 "/"
                 check_service order-service     8001 "/"
-                check_service frontend          3001 "/" 
 
                 # Monitoring: just check base URL responds
                 check_service prometheus-service 80 "/" 
                 check_service grafana-service    80 "/" 
+
+                # --- Inject service IPs into frontend main.js ---
+                echo "[RELEASE] Resolving service external IPs..."
+                PRODUCT_IP=$(kubectl get svc product-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                ORDER_IP=$(kubectl get svc order-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                CUSTOMER_IP=$(kubectl get svc customer-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "N/A")
+
+                echo "[RELEASE] Injecting IPs into frontend/main.js"
+                sed -i "s|_PRODUCT_API_URL_|http://${PRODUCT_IP}:8000|g" ${FRONTEND_DIR}/main.js
+                sed -i "s|_ORDER_API_URL_|http://${ORDER_IP}:8001|g" ${FRONTEND_DIR}/main.js
+
+                echo "--- Modified main.js content ---"
+                head -n 20 ${FRONTEND_DIR}/main.js
+                echo "--------------------------------"
+
+                # --- Rebuild & redeploy frontend with updated main.js ---
+                echo "[RELEASE] Rebuilding frontend with injected IPs"
+                docker build -t ${FRONTEND_IMG}:${IMAGE_TAG} ${FRONTEND_DIR}
+                docker push ${FRONTEND_IMG}:${IMAGE_TAG}
+
+                echo "[RELEASE] Rolling out updated frontend"
+                kubectl set image deploy/frontend frontend-container=${FRONTEND_IMG}:${IMAGE_TAG} -n ${NAMESPACE}
+                kubectl rollout status deploy/frontend -n ${NAMESPACE} --timeout=180s
+
+                echo "Waiting for rollout: frontend"
+                check_service frontend          3001 "/" 
 
                 echo "[RELEASE] All services deployed and verified."
                 kubectl get pods -n ${NAMESPACE}
