@@ -23,9 +23,9 @@ spec:
         ports:
           - containerPort: 80
         env:
-        - name: PRODUCT_API_BASE_URL
+        - name: PRODUCT_API_URL
           value: "http://product-service:8000"
-        - name: ORDER_API_BASE_URL
+        - name: ORDER_API_URL
           value: "http://order-service:8001"
 ---
 apiVersion: v1
