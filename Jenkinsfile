@@ -327,7 +327,7 @@ pipeline {
                   --tenant "$TENANT_ID"
 
                 az acr login --name ${ACR_NAME}
-                az account set --subscription "$SUBSCRIPTION_ID"
+                az account set --subscription b0495cce-c2ce-414b-8f9b-4a8a5e500256
 
                 echo "[RELEASE] Pushing images to ACR"
                 for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
