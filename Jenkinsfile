@@ -46,8 +46,7 @@ pipeline {
 
   stages {
 
-    /* ========================= BUILD (rebuild images) ========================= */
-    /* ========================= BUILD (rebuild images) ========================= */
+    /* ========================= BUILD (build images) ========================= */
     stage('Build') {
       steps {
         checkout scm
