@@ -252,8 +252,6 @@ pipeline {
       }
     }
 
-    /* ======================================================================== */
-/* ======================================================================== */
 /* ======================================================================== */
    stage('Deploy') {
       steps {
@@ -328,18 +326,32 @@ pipeline {
 
                 echo "[RELEASE] Login successful. Now pushing images to ACR..."
                 az acr login --name ${ACR_NAME}
+                az account set --subscription b0495cce-c2ce-414b-8f9b-4a8a5e500256
+                
+                # Avoid proxy issues with ACR
+                export NO_PROXY=${ACR_LOGIN_SERVER},.azurecr.io
+                export no_proxy=$NO_PROXY
 
                 for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-                  docker push $img:latest
+                  echo "[PUSH] Pushing $img..."
+                  for attempt in 1 2 3; do
+                    docker push $img:latest && break
+                    echo "Push failed for $img (attempt $attempt). Retrying in 10s..."
+                    sleep 10
+                  done
+
                   docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
-                  docker push $img:${RELEASE_TAG}
+                  for attempt in 1 2 3; do
+                    docker push $img:${RELEASE_TAG} && break
+                    echo "Push failed for $img:${RELEASE_TAG} (attempt $attempt). Retrying in 10s..."
+                    sleep 10
+                  done
                 done
 
                 # ---------- Deploy to AKS ----------
                 echo "Updating Kubernetes manifests"
 
                 echo "[RELEASE] Deploy to AKS"
-                az account set --subscription b0495cce-c2ce-414b-8f9b-4a8a5e500256
                 az aks get-credentials --resource-group ${RG_PRODUCTION} --name ${AKS_PRODUCTION} --overwrite-existing
           
                 echo " Setting up namespace..."
