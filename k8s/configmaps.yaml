@@ -4,6 +4,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ecomm-config-w09-aks
+  namespace: production 
 data:
 
   # Database Names
@@ -16,5 +17,5 @@ data:
   # Internal Service URLs (Kubernetes Service Names for inter-service communication)
   # These are how your microservices will talk to each other within the cluster.
   # Assuming Product:8000, Order:8001
-  PRODUCT_SERVICE_URL: http://product-service:8000
-  ORDER_SERVICE_URL: http://order-service:8001
+  PRODUCT_SERVICE_URL: http://product-service.production.svc.cluster.local:8000
+  ORDER_SERVICE_URL: http://order-service.production.svc.cluster.local:8001

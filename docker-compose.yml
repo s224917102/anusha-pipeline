@@ -82,7 +82,7 @@ services:
     environment:
       POSTGRES_HOST: product_db
       AZURE_STORAGE_ACCOUNT_NAME: anushakatuwalstg
-      AZURE_STORAGE_ACCOUNT_KEY: <your_storage_account_key>
+      AZURE_STORAGE_ACCOUNT_KEY: S0Gs9S8keazCcpbrA3IDVJe0FacylJCsZlJkruUKq+NyOgeMTG5hCUZJQTD1PxTRDyBaEKUeUJPL+AStkTUD5w==
       AZURE_STORAGE_CONTAINER_NAME: product-images
       AZURE_SAS_TOKEN_EXPIRY_HOURS: 24
     depends_on:
