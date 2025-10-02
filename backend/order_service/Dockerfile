@@ -1,8 +1,8 @@
-FROM python:3.13-alpine3.22
+FROM python:3.12-alpine3.22
 
 WORKDIR /code
 
-# Update system packages for security fixes
+# Update system packages for security fixes 
 RUN apk update
 RUN apk --no-cache upgrade
 # Install build dependencies for psycopg2 and other packages

@@ -30,6 +30,7 @@ pipeline {
     ORDER_IMG       = "${ACR_LOGIN_SERVER}/order_service"
     FRONTEND_IMG    = "${ACR_LOGIN_SERVER}/frontend"
 
+    // sonarqube credentials
     SONARQUBE = 'SonarQube'
     SONAR_PROJECT_KEY  = 's224917102_DevOpsPipeline'
     SONAR_PROJECT_NAME = 'DevOpsPipeline'
