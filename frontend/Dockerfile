@@ -9,4 +9,10 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 # Copy frontend static files
 COPY . /usr/share/nginx/html
 
+# Add entrypoint script to inject env vars into env.js
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 EXPOSE 80
+
+ENTRYPOINT ["/docker-entrypoint.sh"]
