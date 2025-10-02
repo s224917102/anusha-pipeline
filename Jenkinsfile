@@ -339,7 +339,7 @@ pipeline {
                 echo "Updating Kubernetes manifests"
 
                 echo "[RELEASE] Deploy to AKS"
-                az account set --subscription 0495cce-c2ce-414b-8f9b-4a8a5e500256
+                az account set --subscription b0495cce-c2ce-414b-8f9b-4a8a5e500256
                 az aks get-credentials --resource-group ${RG_PRODUCTION} --name ${AKS_PRODUCTION} --overwrite-existing
           
                 echo " Setting up namespace..."
