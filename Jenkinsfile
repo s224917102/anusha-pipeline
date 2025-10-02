@@ -309,6 +309,7 @@ pipeline {
       }
     }
 
+
     stage('Release') {
         steps {
           withCredentials([string(credentialsId: 'AZURE_CREDENTIALS', variable: 'AZURE_CRED_JSON')]) {
