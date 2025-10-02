@@ -87,7 +87,6 @@ pipeline {
       }
     }
 
-
     /* ========================= TEST ========================= */
     stage('Test') {
       options { timeout(time: 25, unit: 'MINUTES') }
