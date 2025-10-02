@@ -322,95 +322,82 @@ pipeline {
                   --username "$CLIENT_ID" \
                   --password "$CLIENT_SECRET" \
                   --tenant "$TENANT_ID"
-                # ---------- Azure Setup ----------
 
-                echo "[RELEASE] Login successful. Now pushing images to ACR..."
                 az acr login --name ${ACR_NAME}
-                az account set --subscription b0495cce-c2ce-414b-8f9b-4a8a5e500256
-                
-                # Avoid proxy issues with ACR
-                export NO_PROXY=${ACR_LOGIN_SERVER},.azurecr.io
-                export no_proxy=$NO_PROXY
+                az account set --subscription "$SUBSCRIPTION_ID"
 
+                echo "[RELEASE] Pushing images to ACR"
                 for img in ${PRODUCT_IMG} ${ORDER_IMG} ${FRONTEND_IMG}; do
-                  echo "[PUSH] Pushing $img..."
-                  for attempt in 1 2 3; do
-                    docker push $img:latest && break
-                    echo "Push failed for $img (attempt $attempt). Retrying in 10s..."
-                    sleep 10
-                  done
-
+                  docker push $img:latest
                   docker tag $img:${IMAGE_TAG} $img:${RELEASE_TAG}
-                  for attempt in 1 2 3; do
-                    docker push $img:${RELEASE_TAG} && break
-                    echo "Push failed for $img:${RELEASE_TAG} (attempt $attempt). Retrying in 10s..."
-                    sleep 10
-                  done
+                  docker push $img:${RELEASE_TAG}
                 done
 
-                # ---------- Deploy to AKS ----------
-                echo "Updating Kubernetes manifests"
-
-                echo "[RELEASE] Deploy to AKS"
+                echo "[RELEASE] Get AKS credentials"
                 az aks get-credentials --resource-group ${RG_PRODUCTION} --name ${AKS_PRODUCTION} --overwrite-existing
-          
-                echo " Setting up namespace..."
+
+                echo "[RELEASE] Ensure namespace exists"
                 kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
 
-                echo "[RELEASE] Apply infra (configmaps, secrets, databases)"
+                # --- Apply Infra ---
                 for f in configmaps.yaml secrets.yaml product-db.yaml order-db.yaml; do
-                [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                  [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
                 done
 
-                echo "[RELEASE] Apply backend microservices (product, order)"
-                for f in product-service.yaml order-service.yaml; do
-                [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                # --- Apply Apps ---
+                for f in product-service.yaml order-service.yaml frontend-configmaps.yaml frontend.yaml; do
+                  [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
                 done
 
-
-                echo "[RELEASE] Apply frontend microservices"
-                for f in frontend-configmaps.yaml frontend.yaml; do
-                [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
-                done
-
-                echo "[RELEASE] Apply monitoring (Prometheus + Grafana)"
+                # --- Apply Monitoring ---
                 for f in prometheus-configmap.yaml prometheus-rbac.yaml prometheus-deployment.yaml grafana-deployment.yaml; do
-                [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                  [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
                 done
 
-                echo "[RELEASE] Waiting for LoadBalancer IPs (Product, Order, Frontend, Prometheus, Grafana)"
-                get_svc_address () {
-                svc="$1"; ns="$2"
-                ip=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-                host=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-                port=$(kubectl get svc "$svc" -n "$ns" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)
+                # --- Rollout Checks ---
+                echo "[RELEASE] Checking rollout status"
+                for deploy in product-service order-service frontend prometheus-server grafana; do
+                  echo "Waiting for rollout: $deploy"
+                  if ! kubectl rollout status deploy/$deploy -n ${NAMESPACE} --timeout=180s; then
+                    echo "[ERROR] Deployment $deploy failed to roll out."
+                    kubectl describe deploy/$deploy -n ${NAMESPACE} || true
+                    kubectl get pods -n ${NAMESPACE} -l app=$deploy -o wide || true
+                    exit 1
+                  fi
+                done
 
-                if [ -n "$ip" ]; then
-                    echo "$ip"
-                elif [ -n "$host" ]; then
-                    echo "$host"
-                elif [ -n "$port" ]; then
-                    echo "localhost:$port"
-                else
-                    echo ""
-                fi
+                # --- Verify Services with Curl ---
+                echo "[RELEASE] Checking service endpoints"
+                check_service () {
+                  svc=$1; port=$2; path=$3
+                  echo "Resolving $svc..."
+                  ADDR=""
+                  for i in $(seq 1 30); do
+                    ADDR=$(kubectl get svc $svc -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+                    [ -n "$ADDR" ] && break
+                    echo "Waiting for $svc external IP..."
+                    sleep 10
+                  done
+                  [ -z "$ADDR" ] && { echo "[ERROR] $svc did not get an external IP"; exit 1; }
+
+                  echo "$svc available at $ADDR:$port"
+                  if ! curl -fsS "http://$ADDR:$port$path" >/dev/null; then
+                    echo "[ERROR] $svc check failed at http://$ADDR:$port$path"
+                    exit 1
+                  fi
                 }
 
-                SERVICES=(product-service order-service frontend prometheus-service grafana-service)
-                for svc in "${SERVICES[@]}"; do
-                echo "Waiting for $svc address..."
-                for i in $(seq 1 60); do
-                    addr=$(get_svc_address "$svc" ${NAMESPACE})
-                    if [ -n "$addr" ]; then
-                    echo "[RELEASE] $svc available at $addr"
-                    break
-                    fi
-                    echo "Attempt $i: still pending..."
-                    sleep 5
-                done
-                done
+                # App services: expect health endpoints
+                check_service product-service   8000 "/health"
+                check_service order-service     8001 "/health"
+                check_service frontend          3001 "/" 
 
-                echo "[RELEASE] Kubernetes release complete."
+                # Monitoring: just check base URL responds
+                check_service prometheus-service 80 "/" 
+                check_service grafana-service    80 "/" 
+
+                echo "[RELEASE] All services deployed and verified."
+                kubectl get pods -n ${NAMESPACE}
                 kubectl get svc -n ${NAMESPACE}
 
                 az logout
@@ -436,7 +423,7 @@ pipeline {
             echo "[ERROR] Prometheus service has no EXTERNAL-IP yet."
             exit 1
           fi
-          PROM_URL="http://${PROM_IP}:9090"
+          PROM_URL="http://${PROM_IP}:80"
           echo "Prometheus URL: $PROM_URL"
 
           echo "== Resolving Product & Order EXTERNAL-IPs =="

@@ -28,7 +28,7 @@ spec:
         - containerPort: 8000
         env:
         - name: POSTGRES_HOST
-          value: order-db-service-w08e1
+          value: order-db-service-w09-aks
         - name: POSTGRES_DB
           valueFrom:
             configMapKeyRef:
