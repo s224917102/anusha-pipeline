@@ -10,7 +10,6 @@ pipeline {
   environment {
     PATH = "/opt/homebrew/opt/python@3.11/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-
     DOCKERHUB_CREDS = 'dockerhub-s224917102'
 
     // Local tags built in Build stage
