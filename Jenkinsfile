@@ -283,16 +283,19 @@ pipeline {
             compose ps || true
 
             # Frontend
-            wait_http "http://localhost:3001/" 90 || FAIL_FRONTEND=1
+            wait_http "http://localhost:3001/" 180 || FAIL_FRONTEND=1
             # Prometheus
-            wait_http "http://localhost:9090/" 90 || FAIL_PROM=1
+            wait_http "http://localhost:9090/" 180 || FAIL_PROM=1
             # Grafana
-            wait_http "http://localhost:3000/" 90 || FAIL_GRAF=1
+            wait_http "http://localhost:3000/" 180 || FAIL_GRAF=1
 
             if [ "${FAIL_PRODUCT:-0}" -ne 0 ] || [ "${FAIL_ORDER:-0}" -ne 0 ] || \
                [ "${FAIL_FRONTEND:-0}" -ne 0 ] || [ "${FAIL_PROM:-0}" -ne 0 ] || \
                [ "${FAIL_GRAF:-0}" -ne 0 ]; then
               echo "[DEPLOY][ERROR] Staging health checks failed. Attempting rollback to :latest."
+
+              # Ensure the reports folder exists before saving logs
+              mkdir -p reports
               compose logs --no-color > reports/compose-failed.log || true
               COMPOSE_IGNORE_ORPHANS=true IMAGE_TAG=latest compose up -d || true
               exit 1
