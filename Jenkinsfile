@@ -418,7 +418,7 @@ pipeline {
 
                 export DOCKER_BUILDKIT=1
                 PLATFORM="linux/amd64"
-                
+
                 # --- Rebuild & redeploy frontend with updated main.js ---
                 docker buildx build --platform=${PLATFORM} -t ${LOCAL_IMG_FRONTEND} ${FRONTEND_DIR} --load
 
@@ -432,7 +432,7 @@ pipeline {
                 docker push ${FRONTEND_IMG}:${RELEASE_TAG}
 
                 echo "[RELEASE] Rolling out updated frontend"
-                kubectl set image deploy/frontend frontend-container=${FRONTEND_IMG}:${RELEASE_TAG} -n ${NAMESPACE}
+
                 kubectl set image deploy/frontend frontend-container=${FRONTEND_IMG}:latest -n ${NAMESPACE}
                 kubectl rollout status deploy/frontend -n ${NAMESPACE} --timeout=300s
 
