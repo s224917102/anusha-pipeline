@@ -416,6 +416,9 @@ pipeline {
                 head -n 20 ${FRONTEND_DIR}/main.js
                 echo "--------------------------------"
 
+                export DOCKER_BUILDKIT=1
+                PLATFORM="linux/amd64"
+                
                 # --- Rebuild & redeploy frontend with updated main.js ---
                 docker buildx build --platform=${PLATFORM} -t ${LOCAL_IMG_FRONTEND} ${FRONTEND_DIR} --load
 
