@@ -407,8 +407,10 @@ pipeline {
                 CUSTOMER_IP=$(kubectl get svc customer-service -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "N/A")
 
                 echo "[RELEASE] Injecting IPs into frontend/main.js"
-                sed -i "s|_PRODUCT_API_URL_|http://${PRODUCT_IP}:8000|g" "${FRONTEND_DIR}/main.js"
-                sed -i "s|_ORDER_API_URL_|http://${ORDER_IP}:8001|g" "${FRONTEND_DIR}/main.js"
+                # Replace placeholders in main.js with real service IPs
+                sed -i.bak "s|_PRODUCT_API_URL_|http://${PRODUCT_IP}:8000|g" "${FRONTEND_DIR}/main.js"
+                sed -i.bak "s|_ORDER_API_URL_|http://${ORDER_IP}:8001|g" "${FRONTEND_DIR}/main.js"
+                rm -f "${FRONTEND_DIR}/main.js.bak"
 
                 echo "--- Modified main.js content ---"
                 head -n 20 ${FRONTEND_DIR}/main.js
