@@ -423,7 +423,7 @@ pipeline {
 
                 echo "[RELEASE] Rolling out updated frontend"
                 kubectl set image deploy/frontend frontend-container=${FRONTEND_IMG}:${IMAGE_TAG} -n ${NAMESPACE}
-                kubectl rollout status deploy/frontend -n ${NAMESPACE} --timeout=180s
+                kubectl rollout status deploy/frontend -n ${NAMESPACE} --timeout=300s
 
                 echo "Waiting for rollout: frontend"
                 check_service frontend          3001 "/" 
