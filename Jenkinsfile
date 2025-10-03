@@ -417,12 +417,20 @@ pipeline {
                 echo "--------------------------------"
 
                 # --- Rebuild & redeploy frontend with updated main.js ---
-                echo "[RELEASE] Rebuilding frontend with injected IPs"
-                docker build -t ${FRONTEND_IMG}:${IMAGE_TAG} ${FRONTEND_DIR}
-                docker push ${FRONTEND_IMG}:${IMAGE_TAG}
+                docker buildx build --platform=${PLATFORM} -t ${LOCAL_IMG_FRONTEND} ${FRONTEND_DIR} --load
+
+                echo "[BUILD] Tagging for registry"
+
+                docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:latest
+                docker tag ${LOCAL_IMG_FRONTEND} ${FRONTEND_IMG}:${IMAGE_TAG}
+
+                docker push ${FRONTEND_IMG}:latest
+                docker tag ${FRONTEND_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${RELEASE_TAG}
+                docker push ${FRONTEND_IMG}:${RELEASE_TAG}
 
                 echo "[RELEASE] Rolling out updated frontend"
-                kubectl set image deploy/frontend frontend-container=${FRONTEND_IMG}:${IMAGE_TAG} -n ${NAMESPACE}
+                kubectl set image deploy/frontend frontend-container=${FRONTEND_IMG}:${RELEASE_TAG} -n ${NAMESPACE}
+                kubectl set image deploy/frontend frontend-container=${FRONTEND_IMG}:latest -n ${NAMESPACE}
                 kubectl rollout status deploy/frontend -n ${NAMESPACE} --timeout=300s
 
                 echo "Waiting for rollout: frontend"
