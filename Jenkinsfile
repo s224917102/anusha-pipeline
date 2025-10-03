@@ -350,7 +350,7 @@ pipeline {
                 done
 
                 # --- Apply Apps ---
-                for f in product-service.yaml order-service.yaml frontend-configmaps.yaml frontend.yaml; do
+                for f in product-service.yaml order-service.yaml; do
                   [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
                 done
 
@@ -431,12 +431,10 @@ pipeline {
                 docker tag ${FRONTEND_IMG}:${IMAGE_TAG} ${FRONTEND_IMG}:${RELEASE_TAG}
                 docker push ${FRONTEND_IMG}:${RELEASE_TAG}
 
-                echo "[RELEASE] Rolling out updated frontend"
+                for f in frontend.yaml; do
+                  [ -f "${K8S_DIR}/$f" ] && kubectl apply -n ${NAMESPACE} -f "${K8S_DIR}/$f" || true
+                done
 
-                kubectl set image deploy/frontend frontend-container=${FRONTEND_IMG}:latest -n ${NAMESPACE}
-                kubectl rollout status deploy/frontend -n ${NAMESPACE} --timeout=300s
-
-                echo "Waiting for rollout: frontend"
                 check_service frontend          3001 "/" 
 
                 echo "[RELEASE] All services deployed and verified."
