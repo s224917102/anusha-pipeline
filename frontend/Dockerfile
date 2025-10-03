@@ -1,5 +1,6 @@
-FROM nginx:1.29.1-alpine-slim
+FROM nginx:alpine
 
+# FROM nginx:1.29.1-alpine-slim
 # Upgrade base packages
 RUN apk --no-cache upgrade
 

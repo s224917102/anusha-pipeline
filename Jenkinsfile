@@ -194,7 +194,6 @@ pipeline {
       }
     }
 
-
     /* ========================= SECURITY ======================= */
     stage('Security') {
       steps {
